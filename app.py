@@ -188,9 +188,18 @@ def admin():
     if not user or role_of(user) != "admin":
         return "forbidden", 403
     con = db()
-    rows = con.execute("SELECT id,username,password,role FROM users").fetchall()
+    # Fix for F-08 (CWE-200 exposure of sensitive information): the query
+    # used to select `password` too and serialize it straight into the JSON
+    # response, so every admin-panel view leaked every user's password hash.
+    # The password column is never needed here (this endpoint's job is to
+    # list users), so it is dropped from the query itself, not just the
+    # output.
+    rows = con.execute("SELECT id,username,role FROM users").fetchall()
     con.close()
     return jsonify([dict(r) for r in rows])
+
+
+ALLOWED_EXPORT_FORMATS = {"txt", "csv", "json"}
 
 
 @app.route("/export")
@@ -198,12 +207,27 @@ def export():
     if not current_user():
         return "auth required", 401
     fmt = request.args.get("fmt", "txt")
-    # convenience "export" feature
-    out = subprocess.run("echo exporting notes as " + fmt, shell=True,
-                         capture_output=True, text=True)
+    # Fix for F-07 (CWE-78 OS command injection): the previous code pasted
+    # the raw `fmt` query param into a shell string run with shell=True, so
+    # any shell metacharacter in `fmt` (e.g. `;id`) executed as a separate
+    # command. Fixed by (1) validating `fmt` against a fixed allow-list
+    # before using it at all, and (2) calling subprocess with an argument
+    # list and shell=False, so there is no shell to inject into even if a
+    # future change loosens the allow-list.
+    if fmt not in ALLOWED_EXPORT_FORMATS:
+        return "unsupported format", 400
+    out = subprocess.run(["echo", "exporting notes as", fmt],
+                         shell=False, capture_output=True, text=True)
     return "<pre>%s</pre>" % out.stdout
 
 
 if __name__ == "__main__":
     seed()
-    app.run(host="0.0.0.0", port=8080, debug=True)
+    # Fix for F-09 (part of the Dockerfile/runtime hardening): debug=True
+    # enabled the Werkzeug interactive debugger (reachable at /console) and
+    # leaked full stack traces with source and local variables on any
+    # unhandled error — a second, lower-effort RCE path on top of F-07.
+    # Debug mode is now opt-in via an explicit env var for local development
+    # only, and defaults off.
+    debug_mode = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
+    app.run(host="0.0.0.0", port=8080, debug=debug_mode)
