@@ -188,7 +188,13 @@ def admin():
     if not user or role_of(user) != "admin":
         return "forbidden", 403
     con = db()
-    rows = con.execute("SELECT id,username,password,role FROM users").fetchall()
+    # Fix for F-08 (CWE-200 exposure of sensitive information): the query
+    # used to select `password` too and serialize it straight into the JSON
+    # response, so every admin-panel view leaked every user's password hash.
+    # The password column is never needed here (this endpoint's job is to
+    # list users), so it is dropped from the query itself, not just the
+    # output.
+    rows = con.execute("SELECT id,username,role FROM users").fetchall()
     con.close()
     return jsonify([dict(r) for r in rows])
 
