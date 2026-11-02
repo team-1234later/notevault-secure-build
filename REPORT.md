@@ -123,6 +123,45 @@ One block per finding (copy as needed):
 
 *Root cause in plain terms: the cookie holding the login token is handed out with no rules about who may touch it. `HttpOnly` stops page scripts from reading it (defuses cookie theft via XSS), `Secure` keeps it off unencrypted connections, and `SameSite` stops other sites from riding on it. Fix: `resp.set_cookie("session", tok, httponly=True, secure=True, samesite="Lax")`.*
 
+### Finding F-07 — OS command injection in `/export` (remote code execution as root)
+| Field | Value |
+|---|---|
+| CWE | CWE-78 (Improper Neutralization of Special Elements used in an OS Command) |
+| OWASP 2025 | A03 Injection |
+| Severity | Critical |
+| Location | `app.py:197-203` (`export()`), `out = subprocess.run("echo exporting notes as " + fmt, shell=True, capture_output=True, text=True)` |
+| Reproduction | `fmt` comes straight from the query string and is pasted into a shell command string that runs with `shell=True`, so the shell cannot tell the app's intended command apart from attacker-supplied shell syntax — anything after a `;`, `\|`, `` ` ``, or `$()` in `fmt` executes as a separate command. **Verified** as logged-in user `alice` (an ordinary, non-admin account): `curl -b alice.cookies "http://localhost:8080/export?fmt=txt;id"` returns `uid=0(root) gid=0(root) groups=0(root)` — proving arbitrary command execution, not just a crash. |
+| Impact | Any authenticated user, regardless of role, gets full code execution inside the container as **root** (the Dockerfile never drops privileges — see F-09). **Verified chained impact:** `fmt=txt;env\|grep -E 'SECRET\|TEAM'` dumped `APP_SECRET`/`TEAM_SALT` from the process environment (making F-05's hard-coded-secret risk moot — the attacker doesn't even need to read the source, injection hands them every secret directly); `fmt=txt;cat /tmp/notevault.db\|strings\|grep hunter2` read the raw SQLite file and recovered `admin`'s private note ("prod db password is hunter2") without going through any `owner=` check in the app — this single bug defeats every access-control fix made elsewhere in the app, because it reads the database file directly from disk. |
+| Evidence | Verified curls above. `uid=0(root)` confirms both the injection and that the process runs as root. Screenshot: `screenshots/findings/F-07-export-rce.png`. |
+
+*Root cause in plain terms: `subprocess.run(string, shell=True)` hands the whole string to `/bin/sh -c`, so user input and shell syntax share the same channel — exactly the command-injection twin of the SQL injection in F-03. Fix: never build a shell string from user input; call `subprocess.run(["echo", "exporting notes as", fmt], shell=False)` (or better, validate `fmt` against an allow-list like `{"txt","csv","json"}` before using it at all), and never pass `shell=True` with any request-derived data.*
+
+### Finding F-08 — `/admin` exposes raw password hashes with no redaction or audit trail
+| Field | Value |
+|---|---|
+| CWE | CWE-200 (Exposure of Sensitive Information to an Unauthorized Actor) |
+| OWASP 2025 | A01 Broken Access Control / A04 Insecure Design |
+| Severity | Medium (role check itself is sound here; the problem is what a legitimate admin session returns) |
+| Location | `app.py:186-193` (`admin()`), `rows = con.execute("SELECT id,username,password,role FROM users").fetchall()` then `jsonify([dict(r) for r in rows])` |
+| Reproduction | The admin endpoint selects every column, including `password`, and serializes the whole row straight to JSON. **Verified**: logging in as the real `admin` account and requesting `/admin` returns every user's raw MD5 hash in the response body (`alice` → `15da1f78ad7d474862865bab1aab4d51`, `admin` → `0192023a7bbd73250516f069df18b500`). An endpoint whose stated purpose is "list users" has no reason to ever put password material on the wire. |
+| Impact | Every admin session — including ones obtained legitimately, via a phished/stolen cookie, or via any of F-02/F-04/F-05's forgery paths — walks away with the full hash table, feeding directly into F-01's offline cracking. This also means the blast radius of *any* future admin-session compromise is far larger than "an attacker can manage users" — it is "an attacker can crack every password in the system." There is also no logging of who dumped the table or when. |
+| Evidence | Verified JSON dump above from a genuine `admin`/`admin123` login (not a forged token). Screenshot: `screenshots/findings/F-08-admin-password-dump.png`. |
+
+*Root cause in plain terms: `SELECT *`-style queries and "just serialize the row" handlers leak whatever columns happen to exist, including ones that were never meant to leave the server. Fix: `SELECT id, username, role FROM users` (drop `password` from the query entirely, not just from the output), and add an audit log entry for admin-panel access.*
+
+### Finding F-09 — Dockerfile: runs as root, bakes a secret into the image, ships the whole repo
+| Field | Value |
+|---|---|
+| CWE | CWE-250 (Execution with Unnecessary Privileges) / CWE-798 (Use of Hard-coded Credentials) / CWE-1104 (Use of Unmaintained Third-Party components — unpinned mutable base tag) |
+| OWASP 2025 | A05 Security Misconfiguration |
+| Severity | High |
+| Location | `Dockerfile:1-12` — `FROM python:3.12` (no digest pin), no `USER` instruction, `ENV APP_SECRET=notevault-dev-secret`, `COPY . .`; also `app.py:209`, `app.run(host="0.0.0.0", port=8080, debug=True)` |
+| Reproduction | Four stacked issues, each verified against the built image: (1) **No non-root user** — the Dockerfile never creates or switches to one, so `docker image inspect notevault-secure-build-notevault -f '{{.Config.User}}'` prints empty and `docker exec ... whoami` prints `root`; this is exactly the privilege F-07's RCE lands in. (2) **Secret baked into the image layer**, not just present at runtime — `docker history --no-trunc notevault-secure-build-notevault \| grep -i secret` shows `ENV APP_SECRET=notevault-dev-secret` in the image metadata, meaning anyone who merely pulls/receives the image (no running container, no app access at all) recovers the secret. (3) **`COPY . .` with no `.dockerignore`** ships `.git/` (full history), `REPORT.md`, `PLAN.md`, and `screenshots/` into the runtime image — confirmed via `docker exec ... ls -la /app`, which lists `.git` alongside the app code; this needlessly exposes source history and project documents inside the deployed artifact and bloats the image. (4) **Unpinned, mutable base tag** `python:3.12` — the same tag resolves to a different image over time, so builds are not reproducible and a compromised/retagged upstream image would be pulled silently. As a related runtime misconfiguration, `app.py:209` also starts Flask with `debug=True`, which enables the Werkzeug interactive debugger (confirmed reachable at `GET /console`) and leaks stack traces with source and local variables on any unhandled error. |
+| Impact | (1) turns *any* code-execution bug (F-07) into a full root compromise of the container instead of a limited one. (2) means the signing secret (F-05) leaks from the image itself, independent of the application ever running or being reachable — e.g. to anyone with registry/CI access. (3) leaks the project's git history and internal documents to anyone with the image. (4) undermines build reproducibility and supply-chain integrity (the SBOM in §6 is only meaningful if the base image is pinned). The debug console adds a second, lower-effort path toward the same RCE outcome as F-07. |
+| Evidence | All four `docker image inspect` / `docker history` / `docker exec` commands above were run against the image built from this repo's own `Dockerfile` with `TEAM_ID=1234Later`. Screenshot: `screenshots/findings/F-09-dockerfile-root-secret.png`. |
+
+*Root cause in plain terms: the Dockerfile trusts its build context and base image completely and never narrows the container's privileges afterward — it copies everything, keeps root, and never pins what "the latest `python:3.12`" even means. Fix (see §6): add a non-root `USER`, drop the baked `ENV APP_SECRET` (pass secrets at runtime instead, e.g. via `docker compose` `environment:`/a secrets file, never `ENV` in the image), add a `.dockerignore` (`.git`, `*.md`, `screenshots/`), pin the base image by digest, and set `debug=False` for any non-dev run.*
+
 ---
 
 ## 5. Remediation  *(25 pts)*
