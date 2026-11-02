@@ -19,7 +19,7 @@
 |---|---|---|---|
 | **A** Sorrawit | `/register` `/login` `/logout` cookie, รหัสผ่าน (F-01) | Threat model + รวมรายงาน | Cover, §1, §3, §8 |
 | **B** ____ | `/notes` `/api/notes/<id>` `/search` | CI pipeline + รวมคลิปวิดีโอ | §7 |
-| **C** ____ | `/admin` `/export` `Dockerfile` | SBOM + Cosign | §6 |
+| **C** Sutapat | `/admin` `/export` `Dockerfile` | SBOM + Cosign | §6 |
 | **D** ____ | `requirements.txt` (Trivy) | §2 + รวบรวม AI disclosure | §2, AI disclosure |
 
 ## Checklist รายวัน
