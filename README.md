@@ -40,7 +40,7 @@ Local (no Docker): `pip install -r requirements.txt`, then run `python app.py` w
 |---|---|---|---|
 | **A** Sorrawit | `/register` `/login` `/logout`, cookie, passwords (F-01) | Threat model + compile report | Cover, §1, §3, §8 |
 | **B** ____ | `/notes` `/api/notes/<id>` `/search` | CI pipeline + compile demo video | §7 |
-| **C** ____ | `/admin` `/export` `Dockerfile` | SBOM + Cosign | §6 |
+| **C** Sutapat | `/admin` `/export` `Dockerfile` | SBOM + Cosign | §6 |
 | **D** ____ | `requirements.txt` (Trivy) | §2 + collect AI disclosure | §2, AI disclosure |
 
 ## Workflow — each member, for their own findings
