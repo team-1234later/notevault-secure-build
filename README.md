@@ -1,10 +1,16 @@
-# NoteVault — Term-Project Starter Target
+# NoteVault — Term Project (Team 1234Later)
 
-A small team note-sharing web app + JSON API. **This is the default target for your
-[term project](../README.md).** It looks like a normal app and works end-to-end —
-but it was built quickly, without a security review. Your job is to fix that.
+A small team note-sharing web app + JSON API, used as our term-project target.
+It looks like a normal app and works end-to-end — but it was built quickly,
+without a security review. Our job is to find, document, and fix its weaknesses.
 
-> ⚠️ Sandbox only. Run it locally; never deploy this as-is. See [ETHICS.md](../../ETHICS.md).
+> ⚠️ Sandbox only. Run it locally; never deploy this as-is.
+
+- **Team:** 1234Later · **`TEAM_ID`:** `1234Later`
+- **Deadline:** Fri 6 Nov 2026, 16:59 (team target: submit by noon)
+- **Submit:** report PDF + video link → `learn.zcr.ai/submit`
+- **In this repo:** code, fixes (branch `remediation`), SBOM, signatures, and CI
+- **Plan & daily checklist:** [PLAN.md](PLAN.md) · **Report:** [REPORT.md](REPORT.md)
 
 ## What it does
 - Register / log in (cookie session)
@@ -15,35 +21,53 @@ but it was built quickly, without a security review. Your job is to fix that.
 
 ## Run it
 ```bash
-cd project/starter-app
-export TEAM_ID=<your-team-name>   # seeds a traceability marker — see below
+# Windows (cmd):   set TEAM_ID=1234Later
+# PowerShell:      $env:TEAM_ID="1234Later"
+export TEAM_ID=1234Later   # bash
 docker compose up          # http://localhost:8080
 # seeded logins:  alice / alicepw   ·   admin / admin123
 ```
-Local (no Docker): `TEAM_ID=<your-team-name> python app.py` (after `pip install -r requirements.txt`)
+Local (no Docker): `pip install -r requirements.txt`, then run `python app.py` with `TEAM_ID=1234Later` set.
 
-> **Set `TEAM_ID` before your first build.** It seeds a small marker derived from your team
-> name into the app's own data — the same idea as the per-student flags in the weekly labs,
-> just per-team here since every team starts from the same codebase. It doesn't change any
-> app behavior or interfere with your assignment; it exists purely so your submitted
-> evidence (screenshots, dumped data, git history) is provably yours if two reports look
-> unusually similar.
+> **Set `TEAM_ID` before your first build.** It seeds a small marker derived from the team
+> name into the app's own data. It doesn't change app behavior; it exists so our evidence
+> (screenshots, dumped data, git history) is provably ours. **Every screenshot must show
+> our `TEAM_ID`.**
 
-## Your assignment (maps to the rubric in [../REPORT-TEMPLATE.md](../REPORT-TEMPLATE.md))
-1. **Threat-model** NoteVault — DFD + STRIDE, trust boundaries, top risks. *(Week 1)*
-2. **Find & document vulnerabilities** — there are several, spanning the course
-   (input handling, access control, sessions, crypto, dependencies, container/config).
-   For each: CWE + OWASP mapping, reproduction, impact, evidence. *(Weeks 3–6, 10, 12–13)*
-3. **Remediate** — fix each finding in a branch with clear commits. *(all term)*
-4. **Supply-chain hardening** — SBOM (CycloneDX) + sign the image with Cosign. *(Week 12)*
-5. **Harden the build** — fix the `Dockerfile`; add a **security CI pipeline**
-   (SAST + SCA + secret scanning) that fails on HIGH/CRITICAL. *(Weeks 13, 15)*
-6. **Demo** — attack → root cause → fix (Week 19).
+## Roles
 
-## Suggested attack surface to probe
+| | Find + fix vulnerabilities in | Infrastructure work | Report sections |
+|---|---|---|---|
+| **A** Sorrawit | `/register` `/login` `/logout`, cookie, passwords (F-01) | Threat model + compile report | Cover, §1, §3, §8 |
+| **B** ____ | `/notes` `/api/notes/<id>` `/search` | CI pipeline + compile demo video | §7 |
+| **C** Sutapat | `/admin` `/export` `Dockerfile` | SBOM + Cosign | §6 |
+| **D** ____ | `requirements.txt` (Trivy) | §2 + collect AI disclosure | §2, AI disclosure |
+
+## Workflow — each member, for their own findings
+1. **Find** — attack the part you own.
+2. **Document** — CWE, OWASP, severity, reproduction, impact, screenshot → `REPORT.md` §4.
+3. **Fix** — commit yourself on branch `remediation`, e.g. `Fix F-03: parameterize search query`.
+4. **Retest** — repeat the same attack to show it now fails; before/after screenshots → §5.
+5. **Explain** — record your own clip: attack → root cause → fix.
+
+## Deliverables (maps to `REPORT.md`)
+1. **Threat model** — DFD + STRIDE, trust boundaries, top risks. *(A, §3)*
+2. **Findings** — input handling, access control, sessions, crypto, dependencies,
+   container/config; each with CWE + OWASP, reproduction, impact, evidence. *(all, §4)*
+3. **Remediation + retest** — fixes on `remediation` with clear commits. *(all, §5)*
+4. **Supply-chain hardening** — fixed `Dockerfile`, SBOM (CycloneDX), image signed with Cosign. *(C, §6)*
+5. **Security CI** — `.github/workflows/security-ci.yml` (SAST + SCA + secret scanning)
+   that fails on HIGH/CRITICAL; capture it failing first, then passing. *(B, §7)*
+6. **Demo video** — unlisted link on the report cover. *(B compiles, A links)*
+
+## Attack surface to probe
 The login, register, note, search, admin, and export endpoints; the session
-cookie; `requirements.txt`; and the `Dockerfile`. Use the techniques and tools
-from the weekly labs (Burp, sqlmap, Trivy, Semgrep, Gitleaks, Cosign).
+cookie; `requirements.txt`; and the `Dockerfile`. Use the tools from the weekly
+labs (Burp, sqlmap, Trivy, Semgrep, Gitleaks, Cosign).
 
-> Teams may propose their own app instead, with instructor approval — but it must
-> offer comparable depth across the same categories.
+## Team rules
+- **Commit your own work from your own account** — commit history shows who did what.
+- **Every screenshot must show our `TEAM_ID`.**
+- **Running late?** Tell the group first, then log the handover in the notes table in [PLAN.md](PLAN.md).
+- **Everyone must be able to explain their own work** — the instructor may ask live.
+- Mark finished tasks `[x]` in [PLAN.md](PLAN.md).
