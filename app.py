@@ -199,14 +199,25 @@ def admin():
     return jsonify([dict(r) for r in rows])
 
 
+ALLOWED_EXPORT_FORMATS = {"txt", "csv", "json"}
+
+
 @app.route("/export")
 def export():
     if not current_user():
         return "auth required", 401
     fmt = request.args.get("fmt", "txt")
-    # convenience "export" feature
-    out = subprocess.run("echo exporting notes as " + fmt, shell=True,
-                         capture_output=True, text=True)
+    # Fix for F-07 (CWE-78 OS command injection): the previous code pasted
+    # the raw `fmt` query param into a shell string run with shell=True, so
+    # any shell metacharacter in `fmt` (e.g. `;id`) executed as a separate
+    # command. Fixed by (1) validating `fmt` against a fixed allow-list
+    # before using it at all, and (2) calling subprocess with an argument
+    # list and shell=False, so there is no shell to inject into even if a
+    # future change loosens the allow-list.
+    if fmt not in ALLOWED_EXPORT_FORMATS:
+        return "unsupported format", 400
+    out = subprocess.run(["echo", "exporting notes as", fmt],
+                         shell=False, capture_output=True, text=True)
     return "<pre>%s</pre>" % out.stdout
 
 
