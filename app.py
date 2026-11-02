@@ -223,4 +223,11 @@ def export():
 
 if __name__ == "__main__":
     seed()
-    app.run(host="0.0.0.0", port=8080, debug=True)
+    # Fix for F-09 (part of the Dockerfile/runtime hardening): debug=True
+    # enabled the Werkzeug interactive debugger (reachable at /console) and
+    # leaked full stack traces with source and local variables on any
+    # unhandled error — a second, lower-effort RCE path on top of F-07.
+    # Debug mode is now opt-in via an explicit env var for local development
+    # only, and defaults off.
+    debug_mode = os.environ.get("FLASK_DEBUG", "").lower() in ("1", "true", "yes")
+    app.run(host="0.0.0.0", port=8080, debug=debug_mode)
