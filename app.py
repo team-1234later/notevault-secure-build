@@ -160,12 +160,20 @@ def add_note():
 
 @app.route("/api/notes/<int:nid>")
 def api_note(nid):
-    if not current_user():
+    user = current_user()
+    if not user:
         return jsonify(error="auth required"), 401
+
     con = db()
-    r = con.execute("SELECT id,owner,title,body FROM notes WHERE id = ?", (nid,)).fetchone()
+    r = con.execute(
+        "SELECT id,owner,title,body FROM notes WHERE id = ? AND owner = ?",
+        (nid, user)
+    ).fetchone()
     con.close()
+
     return (jsonify(dict(r)) if r else (jsonify(error="not found"), 404))
+
+
 
 
 @app.route("/search")
@@ -173,14 +181,25 @@ def search():
     user = current_user()
     if not user:
         return "auth required", 401
+
     term = request.args.get("q", "")
     con = db()
-    q = "SELECT id,title,body FROM notes WHERE owner='%s' AND body LIKE '%%%s%%'" % (user, term)
-    rows = con.execute(q).fetchall()
-    con.close()
-    return render_template_string("<a href=/>back</a><ul>" +
-        "".join("<li>%s: %s</li>" % (r["title"], r["body"]) for r in rows) + "</ul>")
 
+    q = """
+        SELECT id, title, body
+        FROM notes
+        WHERE owner = ?
+        AND body LIKE ?
+    """
+
+    rows = con.execute(q, (user, f"%{term}%")).fetchall()
+    con.close()
+
+    return render_template_string(
+        "<a href=/>back</a><ul>" +
+        "".join("<li>%s: %s</li>" % (r["title"], r["body"]) for r in rows) +
+        "</ul>"
+    )
 
 @app.route("/admin")
 def admin():
