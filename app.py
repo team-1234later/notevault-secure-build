@@ -127,9 +127,10 @@ def login():
     username = request.form.get("username") or (request.json or {}).get("username")
     password = request.form.get("password") or (request.json or {}).get("password")
     con = db()
-    q = "SELECT * FROM users WHERE username = '%s' AND password = '%s'" % ( #slq injection, %s
-        username, hashlib.md5((password or "").encode()).hexdigest())
-    row = con.execute(q).fetchone()
+    # Fix for F-03 (CWE-89 SQL injection): input is passed as ? parameters, so the
+    # database treats it only as data and can never run it as part of the SQL command.
+    row = con.execute("SELECT * FROM users WHERE username = ? AND password = ?",
+                      (username, hashlib.md5((password or "").encode()).hexdigest())).fetchone()
     con.close()
     if not row:
         return "login failed", 401
