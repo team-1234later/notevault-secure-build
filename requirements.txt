@@ -6,3 +6,4 @@ Jinja2==3.0.1
 PyJWT==1.7.1
 requests==2.25.1
 urllib3==1.26.4
+argon2-cffi==23.1.0

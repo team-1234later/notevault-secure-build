@@ -16,10 +16,15 @@ import sqlite3
 import subprocess
 
 import jwt  # PyJWT
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, InvalidHashError
 from flask import Flask, request, jsonify, render_template_string, redirect, make_response
 
 app = Flask(__name__)
 DB = "/tmp/notevault.db"
+# Fix for F-01 (CWE-916/CWE-327): passwords are hashed with argon2id, which adds a random
+# salt per password and is deliberately slow + memory-hard, instead of fast unsalted MD5.
+ph = PasswordHasher()
 # Fix for F-05 (CWE-798/CWE-321 hard-coded key): the signing key is read from the
 # environment at runtime and never written in source. If it is missing or too short
 # the app refuses to start (fail closed) instead of falling back to a guessable default.
@@ -70,8 +75,8 @@ def seed():
         "CREATE TABLE notes (id INTEGER PRIMARY KEY, owner TEXT, title TEXT, body TEXT);"
     )
     con.executemany("INSERT INTO users (username, password, role) VALUES (?,?,?)",
-                    [("alice", hashlib.md5(b"alicepw").hexdigest(), "user"),
-                     ("admin", hashlib.md5(b"admin123").hexdigest(), "admin")])
+                    [("alice", ph.hash("alicepw"), "user"),
+                     ("admin", ph.hash("admin123"), "admin")])
     con.executemany("INSERT INTO notes (owner, title, body) VALUES (?,?,?)",
                     [("alice", "groceries", "milk, eggs"),
                      ("admin", "infra", "prod db password is hunter2"),
@@ -122,7 +127,7 @@ def register():
     role = "user"
     con = db()
     con.execute("INSERT INTO users (username, password, role) VALUES (?,?,?)",
-                (username, hashlib.md5(password.encode()).hexdigest(), role))
+                (username, ph.hash(password), role))
     con.commit()
     con.close()
     return redirect("/")
@@ -135,12 +140,17 @@ def login():
     con = db()
     # Fix for F-03 (CWE-89 SQL injection): input is passed as ? parameters, so the
     # database treats it only as data and can never run it as part of the SQL command.
-    row = con.execute("SELECT * FROM users WHERE username = ? AND password = ?",
-                      (username, hashlib.md5((password or "").encode()).hexdigest())).fetchone()
+    row = con.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
     con.close()
-    if not row:
+    # F-01: argon2 hashes are salted, so we fetch the stored hash by username and let
+    # ph.verify() re-hash the attempt with that hash's own salt and compare.
+    try:
+        if not row:
+            raise VerifyMismatchError()
+        ph.verify(row["password"], password or "")
+    except (VerifyMismatchError, InvalidHashError):
         return "login failed", 401
-    tok = jwt.encode({"sub": username}, SECRET, algorithm="HS256")
+    tok = jwt.encode({"sub": row["username"]}, SECRET, algorithm="HS256")
     resp = make_response(redirect("/"))
     # Fix for F-06 (CWE-1004/CWE-614): HttpOnly hides the cookie from page JavaScript,
     # Secure keeps it off plain HTTP, SameSite=Lax stops cross-site requests carrying it.
