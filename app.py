@@ -85,7 +85,8 @@ def current_user():
     if not tok:
         return None
     try:
-        data = jwt.decode(tok, SECRET, algorithms=["HS256", "none"]) #jwt accept none
+        # Fix for F-02 (CWE-347): only HS256 is accepted; "none" (no signature) is never allowed.
+        data = jwt.decode(tok, SECRET, algorithms=["HS256"])
         return data.get("sub")
     except Exception:
         return None
@@ -141,7 +142,9 @@ def login():
         return "login failed", 401
     tok = jwt.encode({"sub": username}, SECRET, algorithm="HS256")
     resp = make_response(redirect("/"))
-    resp.set_cookie("session", tok)
+    # Fix for F-06 (CWE-1004/CWE-614): HttpOnly hides the cookie from page JavaScript,
+    # Secure keeps it off plain HTTP, SameSite=Lax stops cross-site requests carrying it.
+    resp.set_cookie("session", tok, httponly=True, secure=True, samesite="Lax")
     return resp
 
 
