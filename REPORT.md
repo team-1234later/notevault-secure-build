@@ -8,7 +8,7 @@
 | Field | Value |
 |---|---|
 | Team name | 1234Later (`TEAM_ID=1234Later`) |
-| Members (name + ID) | A: Sorrawit Thanakhwang (6531503080) · B: Neree Booncharoen (6631503018) · C: Sutapat ____ (6531503085) |
+| Members (name + ID) | A: Sorrawit Thanakhwang (6531503080) · B: Neree Booncharoen (6631503018) · C: Sutapat Chucham (6531503085) · D: Nararat Kritphet (6631503110) |
 | Target application | NoteVault (course term-project starter app: Flask note-sharing web app + JSON API) |
 | Repository URL | https://github.com/team-1234later/notevault-secure-build (fixes on branch `remediation`) |
 | Video | ____ *(unlisted link — added after the clips are combined)* |
@@ -24,7 +24,7 @@
 ---
 
 ## 1. Executive Summary
-NoteVault is a small Flask web app where users register, log in with a cookie session, keep private notes, search them, and export them, with an admin panel that lists users. We assessed it as a three-person team: we threat-modelled it with STRIDE over a data-flow diagram (§3), attacked every endpoint and the container build, and fixed what we found on the `remediation` branch.
+NoteVault is a small Flask web app where users register, log in with a cookie session, keep private notes, search them, and export them, with an admin panel that lists users. We assessed it as a four-person team: we threat-modelled it with STRIDE over a data-flow diagram (§3), attacked every endpoint and the container build, and fixed what we found on the `remediation` branch.
 
 **Before our fixes the app was effectively wide open.** We verified **10 findings: 2 Critical, 5 High, 3 Medium.** *(F-10 severity to be confirmed by B.)*
 
@@ -361,6 +361,9 @@ Plus `argon2-cffi==23.1.0` added to `requirements.txt`.
 7. **No audit logging** of logins, failed logins or admin-panel access, so an attack like ours would leave no trail (STRIDE *Repudiation*).
 
 ### Lessons learned
+
+1. **Prevention matters, but plan for the day it fails: whatever an attacker gets should be the least privilege possible.** We fixed every bug we found, and we still discovered a new one (the `/search` template injection) while writing this report. It will not be the last. What decided how bad that bug was had nothing to do with the bug itself. It came down to the privileges already in place. Before F-09 the same kind of command execution (F-07) ran as `uid=0(root)`. After F-09, the template injection ran as `uid=10001(notevault)`, an account that owns nothing but the app. The same idea runs through our other fixes: new accounts start as `user` (F-04), `/admin` no longer hands out password hashes (F-08), and even a stolen hash is now slow to crack (F-01). Each layer shrinks what a successful attacker walks away with.
+2. **A vulnerability that looks scary is not always the one that works, so test before you rank.** On paper the `alg:none` JWT (F-02) and the login SQL injection (F-03) looked like the worst bugs. When we actually ran them, F-02 was blocked by the library and F-03 logged in as a fake user with no admin role. The quiet-looking ones, a form field the backend didn't ignore (F-04) and a string constant in the source (F-05), were the ones that made us admin. Only trying each attack against the running app showed us which risks were real, and that is what our severity ratings are based on.
 
 
 ---
