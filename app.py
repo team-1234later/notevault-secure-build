@@ -20,7 +20,12 @@ from flask import Flask, request, jsonify, render_template_string, redirect, mak
 
 app = Flask(__name__)
 DB = "/tmp/notevault.db"
-SECRET = "notevault-dev-secret"  # used to sign session tokens #secret in app code?
+# Fix for F-05 (CWE-798/CWE-321 hard-coded key): the signing key is read from the
+# environment at runtime and never written in source. If it is missing or too short
+# the app refuses to start (fail closed) instead of falling back to a guessable default.
+SECRET = os.environ.get("APP_SECRET", "")
+if len(SECRET) < 32:
+    raise SystemExit("APP_SECRET is missing or shorter than 32 characters - refusing to start")
 
 # Anti-copying: every team's build is seeded with a marker derived from their own TEAM_ID, so
 # any evidence a team submits (SQLi dump, IDOR response, admin-panel screenshot) that shows the
