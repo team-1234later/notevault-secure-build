@@ -20,7 +20,7 @@ from flask import Flask, request, jsonify, render_template_string, redirect, mak
 
 app = Flask(__name__)
 DB = "/tmp/notevault.db"
-SECRET = "notevault-dev-secret"  # used to sign session tokens
+SECRET = "notevault-dev-secret"  # used to sign session tokens #secret in app code?
 
 # Anti-copying: every team's build is seeded with a marker derived from their own TEAM_ID, so
 # any evidence a team submits (SQLi dump, IDOR response, admin-panel screenshot) that shows the
@@ -80,7 +80,7 @@ def current_user():
     if not tok:
         return None
     try:
-        data = jwt.decode(tok, SECRET, algorithms=["HS256", "none"])
+        data = jwt.decode(tok, SECRET, algorithms=["HS256", "none"]) #jwt accept none
         return data.get("sub")
     except Exception:
         return None
@@ -111,7 +111,9 @@ def home():
 def register():
     username = request.form.get("username") or (request.json or {}).get("username")
     password = request.form.get("password") or (request.json or {}).get("password")
-    role = request.form.get("role") or (request.json or {}).get("role") or "user"
+    # Fix for F-04 (CWE-915 mass assignment): role is decided by the server, never
+    # read from the request. Every new account gets the lowest privilege ("user").
+    role = "user"
     con = db()
     con.execute("INSERT INTO users (username, password, role) VALUES (?,?,?)",
                 (username, hashlib.md5(password.encode()).hexdigest(), role))
@@ -125,7 +127,7 @@ def login():
     username = request.form.get("username") or (request.json or {}).get("username")
     password = request.form.get("password") or (request.json or {}).get("password")
     con = db()
-    q = "SELECT * FROM users WHERE username = '%s' AND password = '%s'" % (
+    q = "SELECT * FROM users WHERE username = '%s' AND password = '%s'" % ( #slq injection, %s
         username, hashlib.md5((password or "").encode()).hexdigest())
     row = con.execute(q).fetchone()
     con.close()
