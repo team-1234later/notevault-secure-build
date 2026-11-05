@@ -16,11 +16,21 @@ import sqlite3
 import subprocess
 
 import jwt  # PyJWT
+from argon2 import PasswordHasher
+from argon2.exceptions import VerifyMismatchError, InvalidHashError
 from flask import Flask, request, jsonify, render_template_string, redirect, make_response
 
 app = Flask(__name__)
 DB = "/tmp/notevault.db"
-SECRET = "notevault-dev-secret"  # used to sign session tokens
+# Fix for F-01 (CWE-916/CWE-327): passwords are hashed with argon2id, which adds a random
+# salt per password and is deliberately slow + memory-hard, instead of fast unsalted MD5.
+ph = PasswordHasher()
+# Fix for F-05 (CWE-798/CWE-321 hard-coded key): the signing key is read from the
+# environment at runtime and never written in source. If it is missing or too short
+# the app refuses to start (fail closed) instead of falling back to a guessable default.
+SECRET = os.environ.get("APP_SECRET", "")
+if len(SECRET) < 32:
+    raise SystemExit("APP_SECRET is missing or shorter than 32 characters - refusing to start")
 
 # Anti-copying: every team's build is seeded with a marker derived from their own TEAM_ID, so
 # any evidence a team submits (SQLi dump, IDOR response, admin-panel screenshot) that shows the
@@ -65,8 +75,8 @@ def seed():
         "CREATE TABLE notes (id INTEGER PRIMARY KEY, owner TEXT, title TEXT, body TEXT);"
     )
     con.executemany("INSERT INTO users (username, password, role) VALUES (?,?,?)",
-                    [("alice", hashlib.md5(b"alicepw").hexdigest(), "user"),
-                     ("admin", hashlib.md5(b"admin123").hexdigest(), "admin")])
+                    [("alice", ph.hash("alicepw"), "user"),
+                     ("admin", ph.hash("admin123"), "admin")])
     con.executemany("INSERT INTO notes (owner, title, body) VALUES (?,?,?)",
                     [("alice", "groceries", "milk, eggs"),
                      ("admin", "infra", "prod db password is hunter2"),
@@ -80,7 +90,8 @@ def current_user():
     if not tok:
         return None
     try:
-        data = jwt.decode(tok, SECRET, algorithms=["HS256", "none"])
+        # Fix for F-02 (CWE-347): only HS256 is accepted; "none" (no signature) is never allowed.
+        data = jwt.decode(tok, SECRET, algorithms=["HS256"])
         return data.get("sub")
     except Exception:
         return None
@@ -111,10 +122,12 @@ def home():
 def register():
     username = request.form.get("username") or (request.json or {}).get("username")
     password = request.form.get("password") or (request.json or {}).get("password")
-    role = request.form.get("role") or (request.json or {}).get("role") or "user"
+    # Fix for F-04 (CWE-915 mass assignment): role is decided by the server, never
+    # read from the request. Every new account gets the lowest privilege ("user").
+    role = "user"
     con = db()
     con.execute("INSERT INTO users (username, password, role) VALUES (?,?,?)",
-                (username, hashlib.md5(password.encode()).hexdigest(), role))
+                (username, ph.hash(password), role))
     con.commit()
     con.close()
     return redirect("/")
@@ -125,15 +138,23 @@ def login():
     username = request.form.get("username") or (request.json or {}).get("username")
     password = request.form.get("password") or (request.json or {}).get("password")
     con = db()
-    q = "SELECT * FROM users WHERE username = '%s' AND password = '%s'" % (
-        username, hashlib.md5((password or "").encode()).hexdigest())
-    row = con.execute(q).fetchone()
+    # Fix for F-03 (CWE-89 SQL injection): input is passed as ? parameters, so the
+    # database treats it only as data and can never run it as part of the SQL command.
+    row = con.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
     con.close()
-    if not row:
+    # F-01: argon2 hashes are salted, so we fetch the stored hash by username and let
+    # ph.verify() re-hash the attempt with that hash's own salt and compare.
+    try:
+        if not row:
+            raise VerifyMismatchError()
+        ph.verify(row["password"], password or "")
+    except (VerifyMismatchError, InvalidHashError):
         return "login failed", 401
-    tok = jwt.encode({"sub": username}, SECRET, algorithm="HS256")
+    tok = jwt.encode({"sub": row["username"]}, SECRET, algorithm="HS256")
     resp = make_response(redirect("/"))
-    resp.set_cookie("session", tok)
+    # Fix for F-06 (CWE-1004/CWE-614): HttpOnly hides the cookie from page JavaScript,
+    # Secure keeps it off plain HTTP, SameSite=Lax stops cross-site requests carrying it.
+    resp.set_cookie("session", tok, httponly=True, secure=True, samesite="Lax")
     return resp
 
 
@@ -160,12 +181,20 @@ def add_note():
 
 @app.route("/api/notes/<int:nid>")
 def api_note(nid):
-    if not current_user():
+    user = current_user()
+    if not user:
         return jsonify(error="auth required"), 401
+
     con = db()
-    r = con.execute("SELECT id,owner,title,body FROM notes WHERE id = ?", (nid,)).fetchone()
+    r = con.execute(
+        "SELECT id,owner,title,body FROM notes WHERE id = ? AND owner = ?",
+        (nid, user)
+    ).fetchone()
     con.close()
+
     return (jsonify(dict(r)) if r else (jsonify(error="not found"), 404))
+
+
 
 
 @app.route("/search")
@@ -173,14 +202,25 @@ def search():
     user = current_user()
     if not user:
         return "auth required", 401
+
     term = request.args.get("q", "")
     con = db()
-    q = "SELECT id,title,body FROM notes WHERE owner='%s' AND body LIKE '%%%s%%'" % (user, term)
-    rows = con.execute(q).fetchall()
-    con.close()
-    return render_template_string("<a href=/>back</a><ul>" +
-        "".join("<li>%s: %s</li>" % (r["title"], r["body"]) for r in rows) + "</ul>")
 
+    q = """
+        SELECT id, title, body
+        FROM notes
+        WHERE owner = ?
+        AND body LIKE ?
+    """
+
+    rows = con.execute(q, (user, f"%{term}%")).fetchall()
+    con.close()
+
+    return render_template_string(
+        "<a href=/>back</a><ul>" +
+        "".join("<li>%s: %s</li>" % (r["title"], r["body"]) for r in rows) +
+        "</ul>"
+    )
 
 @app.route("/admin")
 def admin():

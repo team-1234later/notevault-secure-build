@@ -7,11 +7,12 @@
 
 | Field | Value |
 |---|---|
-| Team name | |
-| Members (name + ID) | |
-| Target application | |
-| Repository URL | |
-| Date | |
+| Team name | 1234Later (`TEAM_ID=1234Later`) |
+| Members (name + ID) | A: Sorrawit Thanakhwang (6531503080) · B: Neree Booncharoen (6631503018) · C: Sutapat Chucham (6531503085) · D: Nararat Kritphet (6631503110) |
+| Target application | NoteVault (course term-project starter app: Flask note-sharing web app + JSON API) |
+| Repository URL | https://github.com/team-1234later/notevault-secure-build (fixes on branch `remediation`) |
+| Video | ____ *(unlisted link — added after the clips are combined)* |
+| Date | 6 November 2026 |
 
 ## AI-tool usage disclosure
 *Academic integrity: state how you used any AI tools (ChatGPT, Copilot, etc.) — e.g. searching, coding, translating, drafting. "None" is a valid answer.*
@@ -23,7 +24,19 @@
 ---
 
 ## 1. Executive Summary
-*(½ page) What the app is, how many findings by severity, and the overall risk before vs. after your fixes.*
+NoteVault is a small Flask web app where users register, log in with a cookie session, keep private notes, search them, and export them, with an admin panel that lists users. We assessed it as a four-person team: we threat-modelled it with STRIDE over a data-flow diagram (§3), attacked every endpoint and the container build, and fixed what we found on the `remediation` branch.
+
+**Before our fixes the app was effectively wide open.** We verified **10 findings: 2 Critical, 5 High, 3 Medium.** *(F-10 severity to be confirmed by B.)*
+
+| Severity | Findings |
+|---|---|
+| Critical | F-03 SQL injection in `/login` · F-07 OS command injection in `/export` (remote code execution as root) |
+| High | F-01 unsalted MD5 passwords · F-04 self-registration as admin · F-05 hard-coded JWT signing key · F-09 Dockerfile runs as root with a baked-in secret · F-10 any user can read any note by id (BOLA) |
+| Medium | F-02 `alg:none` allowed in JWT verification (latent) · F-06 session cookie without HttpOnly/Secure/SameSite · F-08 `/admin` returns password hashes |
+
+Three independent paths gave a stranger full control with no password: register with `role=admin` (F-04), forge an admin token with the key from the source code (F-05), or inject a shell command through `/export` (F-07). Once inside, `/admin` handed out every password hash (F-08), and because they were unsalted MD5 (F-01), `admin123` and `alicepw` cracked in seconds.
+
+**After our fixes,** every one of these attacks was replayed against a fresh build and now fails (§5): queries are parameterized, roles are set by the server, the signing key comes from the environment and the app refuses to start without one, only `HS256` tokens are accepted, cookies carry all three flags, passwords are argon2id, `/export` no longer uses a shell, `/admin` no longer returns hashes, notes are checked for ownership, and the container runs as a non-root user from a pinned image. The overall risk drops from **critical (anonymous admin and remote code execution)** to **moderate**. The main remaining issue is a server-side template injection we found in `/search` while writing this report (§8).
 
 ---
 
@@ -35,11 +48,28 @@
 
 ## 3. Threat Model — STRIDE  *(20 pts)*
 
+We walked each element and flow of the §2 DFD and applied STRIDE. `✓` marks a threat that is realistic for that element in NoteVault as built; `–` marks one that does not meaningfully apply. The "Top threat & mitigation" column names the single worst case and the control that removes it. Findings proven in §4 are cited by their `F-` number. The threat model was drawn before the findings were split across the team; the extra threats it surfaced (command injection, BOLA, search SQLi) were then picked up by teammates as F-07 and F-10, and the one still not written up as a finding (stored XSS) is marked *(open)*.
+
 | Element / data flow | S | T | R | I | D | E | Top threat & mitigation |
 |---|---|---|---|---|---|---|---|
-| | | | | | | | |
+| **Credentials flow** — Browser → `/login`, `/register` | ✓ | ✓ | ✓ | ✓ | – | ✓ | **Authentication bypass / self-made admin.** `login()` builds SQL by string formatting (`admin'--` logs in with no password, **F-03**), and `register()` trusts a client-supplied `role` (`role=admin` → instant admin, **F-04**). *Mitigation:* parameterize the login query (use the `?` form already in `role_of()`); force new accounts to `role="user"` and ignore any client role. |
+| **Session cookie (JWT)** — issued by `/login`, read by every route via `current_user()` | ✓ | ✓ | – | ✓ | – | ✓ | **Token forgery → admin with no password.** The signing key is hard-coded (`SECRET`, **F-05**), so anyone can mint a valid `HS256` token for `sub=admin`; `current_user()` also allow-lists `alg:none` (**F-02**, latent); the cookie carries no `HttpOnly`/`Secure`/`SameSite`, so an XSS can steal it (**F-06**). *Mitigation:* load `SECRET` from the environment / a secrets manager and rotate it; `algorithms=["HS256"]` only; set `httponly=True, secure=True, samesite="Lax"`. |
+| **Auth & Session process** — `current_user()`, `role_of()` | ✓ | – | ✗ | – | – | ✓ | **Spoofing via a forged or `none` token** is accepted as a real identity. *Mitigation:* as above — verify only `HS256` against a secret the client cannot know. |
+| **Notes & Search process** — `/`, `/notes`, `/api/notes/<id>`, `/search` | – | ✓ | – | ✓ | – | – | **Cross-user note disclosure + second SQLi.** `/api/notes/<id>` returns any note by id with no owner check — any logged-in user reads the admin's note (`prod db password is hunter2`), a BOLA (**F-10**); `/search` builds SQL with `%s` again, a second injection (fixed with F-10 in the `remediation` branch); note bodies render with `\|safe`, enabling stored XSS *(open)*. *Mitigation:* check `owner == current_user()` on `nid`; parameterize the search; escape note output (drop `\|safe`). |
+| **Admin Panel process** — `/admin` | – | – | ✓ | ✓ | – | ✓ | **Full credential dump to anyone holding an admin session.** `/admin` returns every user's username, role, and password hash as JSON; reaching it is role-gated but the gate is defeated by F-04/F-05, and the dump is not logged (**F-08**). *Mitigation:* never return password hashes; enforce real role-based access control; write an audit log of admin access (counters the R gap). |
+| **Export process → OS shell** — `/export` | – | ✓ | – | ✓ | ✓ | ✓ | **OS command injection → remote code execution** (**F-07**). `subprocess.run("echo exporting notes as " + fmt, shell=True)` pastes the client's `fmt` into a shell string, so `fmt=txt;id` runs `id`; any registered user can reach it. *Mitigation:* remove the shell call entirely and build the export in-process; if a command is unavoidable, pass an argument list (no `shell=True`) and allow-list `fmt`. |
+| **SQLite DB** — `users`, `notes` (`/tmp/notevault.db`) | – | ✓ | ✓ | ✓ | – | – | **Weak password storage + secrets at rest.** Passwords are unsalted MD5 (**F-01**), crackable in seconds once dumped; a plaintext production secret is stored in an admin note. *Mitigation:* hash with argon2id; never store live secrets as note data; run the DB under a least-privilege account. |
+| **SECRET store** — `app.py:23` | ✓ | – | – | ✓ | – | – | **Signing-key disclosure** (**F-05**). The key lives in source, so every reader of the repo holds it and can forge sessions. *Mitigation:* move to an environment variable / secrets manager, keep it out of version control, and set it to a long random value. |
 
-*Then rank the top 5 risks by likelihood × impact.*
+### Top 5 risks, ranked by likelihood × impact
+
+1. **OS command injection in `/export` (RCE)** — *likelihood High × impact Critical.* Any attacker can register an account to obtain a session, then run arbitrary commands on the server as the app user. Worst possible impact, trivially reachable. (**F-07**; made worse by the container running as root, **F-09**)
+2. **Hard-coded `SECRET` → session forgery → admin (F-05)** — *High × Critical.* No credentials needed: mint an `HS256` admin token and read `/admin`, which dumps every password hash. Chains into F-01.
+3. **SQL injection in `/login` (F-03)** — *High × Critical.* Authentication bypass and blind data extraction from the `users` table with no password; the same flaw recurs in `/search` (fixed alongside F-10).
+4. **Mass-assignment admin at registration (F-04)** — *High × High.* An anonymous visitor creates an admin account in one request; independent second path to `/admin`.
+5. **Unsalted MD5 password storage (F-01)** — *Medium × High.* Once any of the paths above exposes the `users` table, every real password (`admin123`, `alicepw`) is recovered offline in seconds.
+
+*Notable mentions below the top 5: BOLA on `/api/notes/<id>` (cross-user note read, **F-10**), missing cookie flags (F-06) which upgrade any XSS into session theft, and the `alg:none` allow-list (F-02) which is latent today but one refactor away from full bypass.*
 
 ---
 
@@ -168,14 +198,92 @@ One block per finding (copy as needed):
 
 Per finding: the fix, **before/after** code, and the commit that implements it.
 
-### Fix for F-01
+All fixes below were retested against a fresh build of the `remediation` branch (`docker compose up --build` with `TEAM_ID=1234Later` and a random 64-hex-character `APP_SECRET`), replaying the same requests used in §4.
+
+### Fix for F-01 — Unsalted MD5 password storage
 ```diff
-- vulnerable line
-+ fixed line
++ from argon2 import PasswordHasher
++ from argon2.exceptions import VerifyMismatchError, InvalidHashError
++ ph = PasswordHasher()
+  ...
+- [("alice", hashlib.md5(b"alicepw").hexdigest(), "user"),
+-  ("admin", hashlib.md5(b"admin123").hexdigest(), "admin")]
++ [("alice", ph.hash("alicepw"), "user"),
++  ("admin", ph.hash("admin123"), "admin")]
+  ...
+- (username, hashlib.md5(password.encode()).hexdigest(), role))      # register()
++ (username, ph.hash(password), role))
+  ...
+- row = con.execute("SELECT * FROM users WHERE username = ? AND password = ?",   # login()
+-                   (username, hashlib.md5((password or "").encode()).hexdigest())).fetchone()
++ row = con.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
++ try:
++     if not row:
++         raise VerifyMismatchError()
++     ph.verify(row["password"], password or "")
++ except (VerifyMismatchError, InvalidHashError):
++     return "login failed", 401
 ```
-- **Why this fixes it:** …
-- **Commit:** `<hash>`
-- **Proof the exploit now fails:** (screenshot)
+Plus `argon2-cffi==23.1.0` added to `requirements.txt`.
+- **Why this fixes it:** MD5 is built to be fast and here had no salt, so one dictionary pass cracked every account at once. argon2id gives each password its own random salt (the same password stored twice produces two different hashes, so precomputed tables are useless) and is deliberately slow and memory-hard, so each guess costs the attacker real time and RAM. Because the hash is salted, login can no longer compare hashes inside the SQL query; it now looks the user up by name and lets `ph.verify()` re-hash the attempt with that row's own salt.
+- **Commit:** `677a232`
+- **Proof the exploit now fails:** the `users` table now holds `$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>` values, each with a different salt, instead of the bare MD5 digests `0192023a…`/`15da1f78…` that cracked to `admin123`/`alicepw`. Normal login with the real password still works (302 + session cookie). Before: `screenshots/findings/F-01-crack-md5.png`. After: `screenshots/remediation/F-01-after-argon2id-hash.png`.
+
+### Fix for F-02 — `alg: none` allowed in JWT verification
+```diff
+- data = jwt.decode(tok, SECRET, algorithms=["HS256", "none"])
++ data = jwt.decode(tok, SECRET, algorithms=["HS256"])
+```
+- **Why this fixes it:** the server, not the token, now decides which algorithm is acceptable. With only `HS256` on the list, an unsigned token is rejected by the allow-list itself rather than by the library's key-guard happening to catch it, so the design no longer depends on that accident surviving a refactor or a PyJWT upgrade.
+- **Commit:** `dea8972`
+- **Proof the exploit now fails:** the same forged `alg:none` token for `sub=admin` still returns `403 FORBIDDEN` on `/admin`, now for the right reason. Before: `screenshots/findings/F-02-none-rejected.png`. After: `screenshots/remediation/F-02-after-none-rejected.png`.
+
+### Fix for F-03 — SQL injection in `/login`
+```diff
+- q = "SELECT * FROM users WHERE username = '%s' AND password = '%s'" % (
+-     username, hashlib.md5((password or "").encode()).hexdigest())
+- row = con.execute(q).fetchone()
++ row = con.execute("SELECT * FROM users WHERE username = ? AND password = ?",
++                   (username, hashlib.md5((password or "").encode()).hexdigest())).fetchone()
+```
+*(Shown as committed in `ec481a9`; F-01's commit later reworked this query to a username-only lookup plus `ph.verify()`, which keeps the `?` parameter.)*
+- **Why this fixes it:** with `%s` the username was pasted into the SQL text, so `'` and `--` in the input changed the shape of the query. With `?` the query and the data travel to SQLite separately; the input is only ever a value, so `admin'--` is just a strange username that matches no row. This is the same pattern `role_of()` already used.
+- **Commit:** `ec481a9`
+- **Proof the exploit now fails:** `username=admin'--` with a wrong password now returns `401 UNAUTHORIZED` / `login failed` instead of `302` + a session cookie. Before: `screenshots/findings/F-03-sqli-login-bypass.png`. After: `screenshots/remediation/F-03-after-sqli-blocked.png`.
+
+### Fix for F-04 — Mass assignment of `role` at registration
+```diff
+- role = request.form.get("role") or (request.json or {}).get("role") or "user"
++ role = "user"
+```
+- **Why this fixes it:** the server no longer reads `role` from the request at all, so there is nothing for the client to tamper with. Every new account starts at the lowest privilege (least privilege); promoting someone to admin has to be a separate, admin-only action, not something a visitor can grant themselves.
+- **Commit:** `c388c37`
+- **Proof the exploit now fails:** registering `pwned` with `role=admin`, logging in, and requesting `/admin` with that session now returns `forbidden` (it returned the full users dump before). Before: `screenshots/findings/F-04-register-as-admin.png`. After: `screenshots/remediation/F-04-after-register-role-ignored.png`.
+
+### Fix for F-05 — Hard-coded session-signing secret
+```diff
+# app.py
+- SECRET = "notevault-dev-secret"
++ SECRET = os.environ.get("APP_SECRET", "")
++ if len(SECRET) < 32:
++     raise SystemExit("APP_SECRET is missing or shorter than 32 characters - refusing to start")
+```
+```diff
+# docker-compose.yml
++ - APP_SECRET=${APP_SECRET:?set APP_SECRET to a long random value before docker compose up}
+```
+- **Why this fixes it:** the key is no longer in the source code, so reading the repository no longer hands anyone the ability to mint sessions. It is supplied at run time from the operator's shell (generated with `secrets.token_hex(32)`), and together with F-09's Dockerfile fix it is not in the image either. If the key is missing or too short the app **fails closed** and refuses to start, rather than quietly falling back to a guessable default, which would put the original bug back.
+- **Commit:** `c3832a0`
+- **Proof the exploit now fails:** the exact token from §4, signed with the old `notevault-dev-secret`, now gets `403 FORBIDDEN` on `/admin` (it returned every user's hash before). Running `docker compose up` without `APP_SECRET` set stops immediately with `required variable APP_SECRET is missing a value`. Before: `screenshots/findings/F-05-forge-token-admin-dump.png`. After: `screenshots/remediation/F-05-after-forged-token-rejected.png`, `screenshots/remediation/F-05-after-no-secret-refuses-start.png`.
+
+### Fix for F-06 — Session cookie without security flags
+```diff
+- resp.set_cookie("session", tok)
++ resp.set_cookie("session", tok, httponly=True, secure=True, samesite="Lax")
+```
+- **Why this fixes it:** `HttpOnly` hides the cookie from page JavaScript, so an XSS can no longer read `document.cookie` and send the session to an attacker. It still can't stop injected script from acting inside the victim's open page, so the XSS itself must be fixed separately. `Secure` keeps the cookie off plain-HTTP connections, and `SameSite=Lax` stops other sites' cross-site POSTs from carrying it (CSRF).
+- **Commit:** `dea8972` (together with F-02: both are one-line changes in the session code)
+- **Proof the exploit now fails:** the login response now reads `Set-Cookie: session=…; Secure; HttpOnly; Path=/; SameSite=Lax` (before: `Path=/` only). Before: `screenshots/findings/F-06-cookie-no-flags.png`. After: `screenshots/remediation/F-06-after-cookie-flags.png`.
 
 ### Fix for F-07 — `/export` command injection
 ```diff
@@ -242,8 +350,21 @@ Per finding: the fix, **before/after** code, and the commit that implements it.
 ---
 
 ## 8. Conclusion & Reflection  *(5 pts — clarity)*
-- Residual risks and what you'd harden next.
-- Lessons learned.
+### Residual risks and what we would harden next
+
+1. **Server-side template injection in `/search` (open, Critical).** Found while compiling this report, after the other fixes were in. `/search` builds its HTML by string concatenation and passes the result to `render_template_string`, so a note body is executed as a Jinja template. Verified on the `remediation` build: a note `zz{{7*7}}` comes back from `/search?q=zz` as `zz49`, and `{{ cycler.__init__.__globals__.os.popen('id').read() }}` returns `uid=10001(notevault)`. That is remote code execution for any logged-in user. F-09's non-root user limits the damage, but it is still RCE. *Fix:* pass rows to a fixed template as variables (`render_template_string(TEMPLATE, rows=rows)`) so user data is never parsed as template code, and let Jinja auto-escape it.
+2. **Stored XSS on the home page.** Note titles and bodies are built into HTML with `%s` and printed with `|safe`, so a note containing `<script>` runs in the owner's browser. F-06's `HttpOnly` stops the script from stealing the session cookie, but it can still act as the user inside the page. *Fix:* drop `|safe` and render notes through the template so they are escaped.
+3. **Sessions never expire and logout does not revoke them.** The JWT has no `exp` claim and `/logout` only deletes the browser's copy, so a stolen token works forever. *Fix:* add a short `exp`, and keep a server-side deny-list or session id that logout invalidates.
+4. **No brute-force protection on `/login`.** argon2id makes offline cracking slow, but online guessing is unlimited. *Fix:* rate-limit by account and IP, and lock out after repeated failures.
+5. **Usernames are not unique.** `register()` accepted `pwned` three times during our retest (three rows in the `users` table). *Fix:* add a `UNIQUE` constraint on `username` and handle the error.
+6. **Outdated dependencies.** `requirements.txt` still pins 2021-era Flask, Werkzeug, Jinja2, PyJWT, requests and urllib3; upgrading them and gating on Trivy in CI (§7) is the next supply-chain step.
+7. **No audit logging** of logins, failed logins or admin-panel access, so an attack like ours would leave no trail (STRIDE *Repudiation*).
+
+### Lessons learned
+
+1. **Prevention matters, but plan for the day it fails: whatever an attacker gets should be the least privilege possible.** We fixed every bug we found, and we still discovered a new one (the `/search` template injection) while writing this report. It will not be the last. What decided how bad that bug was had nothing to do with the bug itself. It came down to the privileges already in place. Before F-09 the same kind of command execution (F-07) ran as `uid=0(root)`. After F-09, the template injection ran as `uid=10001(notevault)`, an account that owns nothing but the app. The same idea runs through our other fixes: new accounts start as `user` (F-04), `/admin` no longer hands out password hashes (F-08), and even a stolen hash is now slow to crack (F-01). Each layer shrinks what a successful attacker walks away with.
+2. **A vulnerability that looks scary is not always the one that works, so test before you rank.** On paper the `alg:none` JWT (F-02) and the login SQL injection (F-03) looked like the worst bugs. When we actually ran them, F-02 was blocked by the library and F-03 logged in as a fake user with no admin role. The quiet-looking ones, a form field the backend didn't ignore (F-04) and a string constant in the source (F-05), were the ones that made us admin. Only trying each attack against the running app showed us which risks were real, and that is what our severity ratings are based on.
+
 
 ---
 
