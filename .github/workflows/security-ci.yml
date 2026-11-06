@@ -150,5 +150,3 @@ jobs:
         run: |
           docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 \
             detect -s /repo --exit-code 1 -v   # non-zero => build fails
-security-ci.yml
-6 KB
