@@ -405,7 +405,7 @@ Plus `argon2-cffi==23.1.0` added to `requirements.txt`.
 +                      shell=False, capture_output=True, text=True)
 ```
 - **Why this fixes it:** `shell=True` was handing the whole, attacker-influenced string to `/bin/sh -c`, so shell metacharacters in `fmt` ran as separate commands. Passing an argument list with `shell=False` removes the shell entirely — there is nothing for `;`, `|`, or `` ` `` to be interpreted by. The allow-list check is defense in depth, so even a future refactor back toward a shell call can't reintroduce the bug via `fmt`.
-- **Commit:** `d6eab68`
+- **Commit:** `821730d`
 - **Proof the exploit now fails:** `GET /export?fmt=txt;id` as `alice` now returns `400 unsupported format` instead of `uid=0(root)...`; `GET /export?fmt=csv` still works normally. Before: `screenshots/findings/F-07-export-rce.png`. After: `screenshots/retest/F-07-after-export-blocked.png`.
 
 ### Fix for F-08 — `/admin` exposing password hashes
@@ -414,7 +414,7 @@ Plus `argon2-cffi==23.1.0` added to `requirements.txt`.
 + rows = con.execute("SELECT id,username,role FROM users").fetchall()
 ```
 - **Why this fixes it:** the `password` column is dropped at the SQL level, not filtered out afterward, so the hash never exists in the Python process or the JSON response at all — there is no later code path that could accidentally re-include it.
-- **Commit:** `ecf03f9`
+- **Commit:** `4d5df60`
 - **Proof the exploit now fails:** `GET /admin` as the real `admin` account now returns only `id`/`username`/`role` for every user — no `password` field. Before: `screenshots/findings/F-08-admin-password-dump.png`. After: `screenshots/retest/F-08-after-admin-no-hashes.png`.
 
 ### Fix for F-09 — Dockerfile hardening (root user, baked secret, bloated image, debug mode)
@@ -438,7 +438,7 @@ Plus `argon2-cffi==23.1.0` added to `requirements.txt`.
 + app.run(host="0.0.0.0", port=8080, debug=debug_mode)
 ```
 - **Why this fixes it:** pinning the base image by digest makes builds reproducible and stops a retagged/compromised upstream `python:3.12` from being pulled silently. Dropping `ENV APP_SECRET` means no secret ever lands in an image layer (`docker history` has nothing to show). Copying only `requirements.txt` and `app.py`, instead of `COPY . .`, keeps `.git/`, `REPORT.md`, `PLAN.md`, and `screenshots/` out of the runtime image entirely. Adding a dedicated `notevault` user and `USER notevault` means code execution (e.g. a future F-07-class bug) lands with no root privileges in the container. Making `debug` opt-in removes the Werkzeug interactive debugger/console from the default run.
-- **Commit:** `69ba34f`
+- **Commit:** `985d677`
 - **Proof the exploit now fails:** rebuilt image — `docker exec ... whoami` → `notevault` (was `root`); `docker history ... | grep -i secret` → no match (was `ENV APP_SECRET=...`); `docker exec ... ls -la /app` → only `app.py`, `requirements.txt` (was `.git/`, docs, screenshots too); `GET /console` → `404` (was the Werkzeug debugger page). Before: `screenshots/findings/F-09-dockerfile-root-secret.png`. After: `screenshots/retest/F-09-after-dockerfile-hardened.png`.
 
 ### Fix for F-10 — Note ownership check on `/api/notes/<id>`
@@ -525,9 +525,30 @@ Plus `argon2-cffi==23.1.0` added to `requirements.txt`.
 ---
 
 ## 6. Supply-Chain Hardening  *(15 pts)*
-- **SBOM** (CycloneDX) generated — attach `sbom.json`, note component count.
-- **Artifact signed & verified** with Cosign — paste the `cosign verify` output.
-- One-paragraph **SLSA** self-assessment (which level, why).
+
+### SBOM (CycloneDX)
+- **Tool:** Syft (`anchore/syft`) on the hardened image `notevault:fixed` (built with `TEAM_ID=1234Later`).
+- **Command:** `syft notevault:fixed -o cyclonedx-json > supply-chain/sbom.json`
+- **File:** `supply-chain/sbom.json` — CycloneDX 1.7, 2801 components: 100 libraries (OS packages + Python packages such as `flask@2.0.1`), 7 applications, 1 operating-system, 2693 file entries. SHA-256: `be45026336288c396d652fb815192f3610b41765cb48b7a7b698aaf6e957bdc7`.
+- **Screenshot:** `screenshots/supply-chain/F-06-sbom-cyclonedx.png` (real terminal capture; shows `TEAM_ID=1234Later`, user, Bangkok timestamp).
+
+### Signing and verification (Cosign)
+- Image pushed to a local registry, then signed **by digest** (a tag can be moved; a digest cannot):
+  `cosign sign --key supply-chain/cosign.key localhost:5000/notevault@sha256:d2e2cd7d32b8175ccc77fe4a8854cae0063149142250c2dc642274c3335b802e`
+- Verified with the public key `supply-chain/cosign.pub`:
+  `cosign verify --key supply-chain/cosign.pub <same digest>`
+- Output (full text in `supply-chain/cosign-verify.txt`):
+  ```
+  The following checks were performed on each of these signatures:
+    - The cosign claims were validated
+    - The signatures were verified against the specified public key
+  [{"critical":{"identity":{"docker-reference":"localhost:5000/notevault@sha256:d2e2cd7d..."},"image":{"docker-manifest-digest":"sha256:d2e2cd7d32b8175ccc77fe4a8854cae0063149142250c2dc642274c3335b802e"},"type":"https://sigstore.dev/cosign/sign/v1"},"optional":{}}]
+  ```
+- **Screenshot:** `screenshots/supply-chain/F-06-cosign-verify.png` (real terminal capture with `TEAM_ID=1234Later`).
+- The private key is git-ignored. Rekor transparency log was skipped (local registry, key-based signing); keyless signing would need a public registry and OIDC identity.
+
+### SLSA self-assessment
+**SLSA Build L1.** The build is scripted (`Dockerfile`, base image pinned by digest) and produces provenance-like evidence (SBOM + signature over the exact digest). It is not L2: the image was built on a team laptop, not a hosted build service, and no signed provenance attestation is generated. Next step: build in GitHub Actions and attach a provenance attestation.
 
 ---
 

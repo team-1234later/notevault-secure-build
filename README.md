@@ -60,6 +60,22 @@ Local (no Docker): `pip install -r requirements.txt`, then run `python app.py` w
    that fails on HIGH/CRITICAL; capture it failing first, then passing. *(B, §7)*
 6. **Demo video** — unlisted link on the report cover. *(B compiles, A links)*
 
+## Supply chain (SBOM + signature)
+Files live in [`supply-chain/`](supply-chain/); details in [REPORT.md](REPORT.md) §6.
+```bash
+docker build -t notevault:fixed .
+# SBOM (CycloneDX) — Syft
+docker run --rm -v /var/run/docker.sock:/var/run/docker.sock anchore/syft notevault:fixed -o cyclonedx-json > supply-chain/sbom.json
+# Verify the signed image (use the digest from supply-chain/cosign-verify.txt)
+cosign verify --key supply-chain/cosign.pub <image@digest>
+```
+`cosign.key` (private) is git-ignored and is not in this repo.
+
+## Evidence and extras
+- [`screenshots/findings/`](screenshots/findings/) — before-fix evidence; [`screenshots/retest/`](screenshots/retest/) — after-fix retests
+- [`screenshots/supply-chain/`](screenshots/supply-chain/) — SBOM and Cosign verify captures
+- [`docs/`](docs/) — video scripts
+
 ## Attack surface to probe
 The login, register, note, search, admin, and export endpoints; the session
 cookie; `requirements.txt`; and the `Dockerfile`. Use the tools from the weekly

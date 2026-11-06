@@ -33,7 +33,7 @@
 ### อา. 1 พ.ย.
 - [ ] A: finding ส่วน login/session/รหัสผ่าน ลง §4
 - [ ] B: finding ส่วน notes/api/search ลง §4
-- [ ] C: finding ส่วน admin/export/Dockerfile ลง §4
+- [x] C: finding ส่วน admin/export/Dockerfile ลง §4
 - [ ] D: finding จาก Trivy สแกน `requirements.txt` ลง §4
 - [ ] D: เขียน §2 System Scope
 - [ ] B: push `.github/workflows/security-ci.yml` (ควรล้ม — capture ภาพ)
@@ -41,17 +41,17 @@
 ### จ. 2 พ.ย.
 - [ ] A: commit fix ใน `remediation`
 - [ ] B: commit fix ใน `remediation`
-- [ ] C: commit fix ใน `remediation`
+- [x] C: commit fix ใน `remediation` (commit ใน branch Wicked-Blues)
 - [ ] D: อัปเวอร์ชัน library แล้ว commit ใน `remediation`
 
 ### อ. 3 พ.ย.
 - [ ] A / B / C / D: ทดสอบซ้ำ เก็บภาพก่อน/หลัง ลง §5
 - [ ] B: CI ผ่าน (สีเขียว) — capture ภาพ
-- [ ] C: แก้ Dockerfile, ทำ SBOM (CycloneDX), เซ็น image ที่แก้แล้วด้วย Cosign
+- [x] C: แก้ Dockerfile, ทำ SBOM (CycloneDX), เซ็น image ที่แก้แล้วด้วย Cosign
 
 ### พ. 4 พ.ย.
 - [ ] B: เขียน §7
-- [ ] C: เขียน §6
+- [x] C: เขียน §6
 - [ ] D: รวบรวม AI disclosure ของทุกคน
 - [ ] ทุกคน: เขียนบทพูดส่วนของตัวเอง
 - [ ] A: เขียน Cover, §1, §8 แล้วรวมรายงานเป็นเล่มเดียว
