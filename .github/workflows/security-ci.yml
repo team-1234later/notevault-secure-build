@@ -1,0 +1,152 @@
+# Sandbox/teaching only; for authorized lab use.
+#
+# NoteVault security gate (adapted from the Week 15 DevSecOps lab template).
+#
+# It runs three security tools and FAILS the build on HIGH/CRITICAL:
+#   - Semgrep  (SAST)            OWASP rulesets; gate on ERROR severity
+#   - Trivy    (SCA + IaC)       dependencies, secrets, Dockerfile
+#   - Gitleaks (secret scanning) whole repo + git history
+#
+# Every scanner first writes a full report (kept as a downloadable build
+# artifact even when the gate fails), then a separate gate step decides
+# pass/fail. This repo is private without GitHub Advanced Security, so the
+# Security tab / SARIF upload is not available - reports are artifacts instead.
+#
+# Supply-chain hygiene for the pipeline itself: every action is pinned to a
+# full commit SHA and every container image to an exact version, so a moved
+# tag or a compromised "latest" can't silently change what runs here.
+
+name: security-ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Least-privilege token: read code only. Nothing in this workflow writes.
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------
+  # 1) SAST - Semgrep scans source for insecure patterns.
+  # ---------------------------------------------------------------
+  semgrep:
+    name: SAST (Semgrep)
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep:1.184.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Semgrep scan -> report (all severities, no fail)
+        run: |
+          semgrep scan \
+            --config p/default \
+            --config p/owasp-top-ten \
+            --metrics=off \
+            --sarif --output semgrep.sarif || true
+
+      - name: Keep Semgrep report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: semgrep-report
+          path: semgrep.sarif
+
+      - name: Gate - fail on Semgrep ERROR findings
+        # Only ERROR-severity rules block the build (our HIGH/CRITICAL line).
+        # WARNING/INFO findings stay visible in the report above.
+        run: |
+          semgrep scan \
+            --config p/default \
+            --config p/owasp-top-ten \
+            --metrics=off \
+            --severity ERROR \
+            --error
+
+  # ---------------------------------------------------------------
+  # 2) Trivy - filesystem (SCA + secrets) and IaC/Dockerfile scan.
+  # ---------------------------------------------------------------
+  trivy:
+    name: SCA + IaC (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Trivy fs (SCA) -> report
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret
+          format: sarif
+          output: trivy-fs.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "0"          # report only; the gate step enforces failure
+
+      - name: Trivy config (IaC) -> report
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: config
+          format: sarif
+          output: trivy-config.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Keep Trivy reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: trivy-reports
+          path: |
+            trivy-fs.sarif
+            trivy-config.sarif
+
+      # --- GATE: re-scan with exit-code 1 so HIGH/CRITICAL FAILS the build ---
+      - name: Gate - fail on HIGH/CRITICAL (SCA)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: fs
+          scanners: vuln,secret
+          severity: HIGH,CRITICAL
+          ignore-unfixed: false
+          exit-code: "1"
+
+      - name: Gate - fail on HIGH/CRITICAL (IaC)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: config
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+  # ---------------------------------------------------------------
+  # 3) Gitleaks - secret scanning across the repo + git history.
+  # ---------------------------------------------------------------
+  gitleaks:
+    name: Secrets (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0          # full history so history-buried secrets are caught
+
+      - name: Gitleaks scan -> report
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 \
+            detect -s /repo \
+            --report-format sarif --report-path /repo/gitleaks.sarif \
+            --exit-code 0 -v || true   # report; gate step enforces failure
+
+      - name: Keep Gitleaks report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
+        with:
+          name: gitleaks-report
+          path: gitleaks.sarif
+
+      - name: Gate - fail if any secret found
+        run: |
+          docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.30.1 \
+            detect -s /repo --exit-code 1 -v   # non-zero => build fails

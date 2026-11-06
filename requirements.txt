@@ -1,8 +1,9 @@
-# NoteVault dependencies. (Intentionally pinned to older versions — part of the
-# supply-chain assessment is to find and remediate the vulnerable ones.)
-Flask==2.0.1
-Werkzeug==2.0.1
-Jinja2==3.0.1
-PyJWT==1.7.1
-requests==2.25.1
-urllib3==1.26.4
+# NoteVault dependencies.
+# Fix for F-11 (CWE-1395 vulnerable components): every library the app imports is pinned
+# to a current release (Trivy: 0 High/Critical). requests and urllib3 were removed because
+# nothing in app.py imports them - an unused dependency is attack surface with no benefit.
+Flask==3.1.3
+Werkzeug==3.1.9
+Jinja2==3.1.6
+PyJWT==2.15.1
+argon2-cffi==25.1.0

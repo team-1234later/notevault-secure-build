@@ -9,6 +9,9 @@ services:
       # flags used in the weekly labs. TEAM_SALT stays instructor-side in a real cohort.
       - TEAM_ID=${TEAM_ID:-unassigned}
       - TEAM_SALT=${TEAM_SALT:-notevault-anti-copy-dev-salt}
+      # Fix for F-05: session-signing key comes from the shell at run time, never from
+      # source or the image. Compose stops with an error if it is not set.
+      - APP_SECRET=${APP_SECRET:?set APP_SECRET to a long random value before docker compose up}
     # For quick iteration you can mount the source:
     # volumes:
     #   - ./:/app
