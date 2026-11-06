@@ -193,6 +193,58 @@ One block per finding (copy as needed):
 
 *Root cause in plain terms: the Dockerfile trusts its build context and base image completely and never narrows the container's privileges afterward — it copies everything, keeps root, and never pins what "the latest `python:3.12`" even means. Fix (see §6): add a non-root `USER`, drop the baked `ENV APP_SECRET` (pass secrets at runtime instead, e.g. via `docker compose` `environment:`/a secrets file, never `ENV` in the image), add a `.dockerignore` (`.git`, `*.md`, `screenshots/`), pin the base image by digest, and set `debug=False` for any non-dev run.*
 
+### Finding F-10 — Any user can read any note by id (BOLA / IDOR)
+| Field | Value |
+|---|---|
+| CWE | CWE-639 (Authorization Bypass Through User-Controlled Key) |
+| OWASP 2025 | A01 Broken Access Control (OWASP API Top 10: API1 Broken Object Level Authorization) |
+| Severity | High |
+| Location | `app.py` `api_note()`, `SELECT id,owner,title,body FROM notes WHERE id = ?` (no owner check) |
+| Reproduction | `/api/notes/<id>` checks that *someone* is logged in, but never checks that the note belongs to *them*. Note ids are small sequential integers, so any user can walk them. **Verified:** logged in as the ordinary user `alice`, opening `http://localhost:8080/api/notes/3` returns the admin's note `{"owner":"admin","title":"build-tag","body":"team=1234Later marker=903fd6ff6fce"}`; id 2 returns the admin's `infra` note `prod db password is hunter2`. |
+| Impact | Every note in the system is readable by every registered account, including the admin's stored production database password. Since registration is open, the attacker needs nothing but a free account. |
+| Evidence | Screenshot: `screenshots/findings/F-10-idor-before.png` (admin's note returned to alice; team marker visible). |
+
+*Root cause in plain terms: authentication ("who are you?") was checked, authorization ("is this yours?") was not. The id in the URL is chosen by the client, so the server must tie every lookup to the logged-in user. Fix: add `AND owner = ?` with the current user to the query.*
+
+### Finding F-12 — SQL injection in `/search`
+| Field | Value |
+|---|---|
+| CWE | CWE-89 (SQL Injection) |
+| OWASP 2025 | A03 Injection |
+| Severity | High |
+| Location | `app.py` `search()`, `q = "SELECT id,title,body FROM notes WHERE owner='%s' AND body LIKE '%%%s%%'" % (user, term)` |
+| Reproduction | The same `%s` string-building flaw as F-03, in a second place: the search term is pasted into the SQL text. **Verified:** as `alice`, searching for `' OR 1=1 -- ` (`/search?q=%27%20OR%201%3D1%20--%20`) turns the condition into `... body LIKE '%' OR 1=1 -- %'`, which bypasses the `owner=` filter. The page lists **every user's notes**, including the admin's `infra: prod db password is hunter2` and `build-tag: team=1234Later marker=903fd6ff6fce`. |
+| Impact | Cross-user disclosure of all notes. A `UNION SELECT` on the same parameter could also read other tables, such as `users` with its password hashes. A second, independent path to the data F-10 exposes. |
+| Evidence | Screenshot: `screenshots/findings/NV-search-before.png`. |
+
+*Root cause in plain terms: fixing SQL injection in one function (F-03, `login()`) does not fix it in the others. Every query that touches user input needs the `?` form, and here the `%` wildcards belong in the bound value, not the SQL text.*
+
+### Finding F-13 — Server-side template injection in `/search` (remote code execution)
+| Field | Value |
+|---|---|
+| CWE | CWE-1336 (Improper Neutralization of Special Elements Used in a Template Engine) / CWE-94 (Code Injection) |
+| OWASP 2025 | A03 Injection |
+| Severity | Critical |
+| Location | `app.py` `search()`, `render_template_string("<a href=/>back</a><ul>" + "".join("<li>%s: %s</li>" % (r["title"], r["body"]) ...) + "</ul>")` |
+| Reproduction | The search page is built by pasting note titles and bodies into a string, and that string is then handed to `render_template_string`, which **executes it as a Jinja2 template**. A note's text therefore runs as template code when it appears in search results. **Verified on the `remediation` build (after F-12's SQLi fix):** as `alice`, add a note with body `zz{{7*7}}` and search `zz`, and the result shows `zz49`. Add `yy{{ cycler.__init__.__globals__.os.popen('id').read() }}` and search `yy`, and it returns `uid=10001(notevault) gid=10001(notevault)`: shell commands run on the server. Semgrep flags this line (`render-template-string`, WARNING). |
+| Impact | Any registered user can run arbitrary commands on the server: read the database file, environment variables (including `APP_SECRET`), and anything else the app account can reach. F-09's non-root user limits it to the `notevault` account instead of root, but it is still full code execution in the app. |
+| Evidence | Reproduced with the requests above against the running container (`{{7*7}}` gave `49`; `os.popen('id')` gave `uid=10001(notevault)`). |
+
+*Root cause in plain terms: the template engine was given user data as if it were template code. Templates are code, so data must be passed in as variables, never concatenated into the template string. This is the template-engine twin of SQL injection (F-03/F-12) and command injection (F-07).*
+
+### Finding F-14 — HTML injection in notes (stored XSS)
+| Field | Value |
+|---|---|
+| CWE | CWE-79 (Improper Neutralization of Input During Web Page Generation, stored XSS) |
+| OWASP 2025 | A03 Injection |
+| Severity | Low (currently self-only; see impact) |
+| Location | `app.py` `home()`, notes built as `"<li>#%d <b>%s</b>: %s</li>" % (...)` and printed with `{{ notes_html\|safe }}` in `PAGE` |
+| Reproduction | Note titles and bodies are formatted into raw HTML and then marked `\|safe`, which switches off Jinja's auto-escaping, so any HTML in a note is rendered by the browser. **Verified:** as `alice`, a note whose body contains HTML bold tags shows on the home page as bold text (`#5 HTML Test: Security Test`) instead of the literal tags. The same path accepts `<script>` or `<img onerror=…>`. |
+| Impact | Script injected into a note runs in the browser of whoever views it. Today notes are only shown to their owner, so this is mostly self-XSS. It becomes a real cross-user attack the moment notes are shared, shown to an admin, or combined with a CSRF that plants a note. F-06's `HttpOnly` already stops such a script from stealing the session cookie. |
+| Evidence | Screenshot: `screenshots/findings/F-14-notes-html-injection.png`. |
+
+*Root cause in plain terms: `\|safe` tells the template "trust this HTML", and the HTML was built from user input. Fix: drop `\|safe` and render the notes through the template with auto-escaping.*
+
 ---
 
 ## 5. Remediation  *(25 pts)*
@@ -333,6 +385,39 @@ Plus `argon2-cffi==23.1.0` added to `requirements.txt`.
 - **Why this fixes it:** pinning the base image by digest makes builds reproducible and stops a retagged/compromised upstream `python:3.12` from being pulled silently. Dropping `ENV APP_SECRET` means no secret ever lands in an image layer (`docker history` has nothing to show). Copying only `requirements.txt` and `app.py`, instead of `COPY . .`, keeps `.git/`, `REPORT.md`, `PLAN.md`, and `screenshots/` out of the runtime image entirely. Adding a dedicated `notevault` user and `USER notevault` means code execution (e.g. a future F-07-class bug) lands with no root privileges in the container. Making `debug` opt-in removes the Werkzeug interactive debugger/console from the default run.
 - **Commit:** `69ba34f`
 - **Proof the exploit now fails:** rebuilt image — `docker exec ... whoami` → `notevault` (was `root`); `docker history ... | grep -i secret` → no match (was `ENV APP_SECRET=...`); `docker exec ... ls -la /app` → only `app.py`, `requirements.txt` (was `.git/`, docs, screenshots too); `GET /console` → `404` (was the Werkzeug debugger page). Before: `screenshots/findings/F-09-dockerfile-root-secret.png`. After: `screenshots/retest/F-09-after-dockerfile-hardened.png`.
+
+### Fix for F-10 — Note ownership check on `/api/notes/<id>`
+```diff
+- if not current_user():
++ user = current_user()
++ if not user:
+      return jsonify(error="auth required"), 401
+  con = db()
+- r = con.execute("SELECT id,owner,title,body FROM notes WHERE id = ?", (nid,)).fetchone()
++ r = con.execute(
++     "SELECT id,owner,title,body FROM notes WHERE id = ? AND owner = ?",
++     (nid, user)
++ ).fetchone()
+```
+- **Why this fixes it:** the lookup is now tied to the logged-in user, so a note id that belongs to someone else matches no row. The response is `404 not found` rather than `403`, so the API doesn't even confirm that the other user's note exists.
+- **Commit:** `2b85028`
+- **Proof the exploit now fails:** as `alice`, `/api/notes/3` (the admin's note) now returns `{"error":"not found"}`, while her own `/api/notes/1` still returns `200`. Before: `screenshots/findings/F-10-idor-before.png`. After: `screenshots/retest/F-10-idor-after.png`.
+
+### Fix for F-12 — Parameterized `/search` query
+```diff
+- q = "SELECT id,title,body FROM notes WHERE owner='%s' AND body LIKE '%%%s%%'" % (user, term)
+- rows = con.execute(q).fetchall()
++ q = """
++     SELECT id, title, body
++     FROM notes
++     WHERE owner = ?
++     AND body LIKE ?
++ """
++ rows = con.execute(q, (user, f"%{term}%")).fetchall()
+```
+- **Why this fixes it:** both the owner and the search term are bound as `?` values. The `%` wildcards are added to the *value*, so a `'` in the term is just a character to search for. It can't close the string or add `OR 1=1`.
+- **Commit:** `2b85028` (same commit as F-10)
+- **Proof the exploit now fails:** the same `' OR 1=1 -- ` search now returns an empty list instead of every user's notes. Before: `screenshots/findings/NV-search-before.png`. After: `screenshots/retest/NV-search-after.png`.
 
 ---
 
