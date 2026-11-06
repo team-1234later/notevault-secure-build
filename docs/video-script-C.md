@@ -33,7 +33,7 @@ Live demo: `bash docs/demo-C.sh` (see the header of that file for setup).
 
 ## 4. SBOM + Cosign (~45 s)
 **[Screen: `screenshots/supply-chain/F-06-sbom-cyclonedx.png`]**
-> "After the fixes I rebuilt the image and generated a CycloneDX SBOM with Syft. It lists 2,801 components, 100 of them libraries, including the pinned Flask 2.0.1. If a new vulnerability is published, we immediately know which packages our image contains."
+> "After the fixes I rebuilt the image and generated a CycloneDX SBOM with Syft. It lists 2,795 components, 100 of them libraries, including the upgraded Flask 3.1.3, and no longer contains the unused requests and urllib3. If a new vulnerability is published, we immediately know which packages our image contains."
 
 **[Screen: `F-06-cosign-verify.png`]**
 > "Then I signed the image with Cosign by digest, not by tag, because a tag can be moved but a digest cannot. Verifying with the public key succeeds: the claims are validated and the signature matches the key."
@@ -50,4 +50,4 @@ Live demo: `bash docs/demo-C.sh` (see the header of that file for setup).
 - **Why drop the password column in SQL instead of at output?** The data never enters the Python process, so no other code path can leak it.
 - **Why sign by digest?** A tag can point to a different image later; a digest is bound to the exact content.
 - **Why not keyless signing?** We use a local registry with no public identity, so we used a key pair and skipped the Rekor transparency log.
-- **What are the 2,693 file entries in the SBOM?** Syft also lists files in the image. The real packages are the 100 libraries.
+- **What are the 2,687 file entries in the SBOM?** Syft also lists files in the image. The real packages are the 100 libraries.

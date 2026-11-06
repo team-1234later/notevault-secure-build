@@ -24,6 +24,7 @@ without a security review. Our job is to find, document, and fix its weaknesses.
 # Windows (cmd):   set TEAM_ID=1234Later
 # PowerShell:      $env:TEAM_ID="1234Later"
 export TEAM_ID=1234Later   # bash
+export APP_SECRET=$(openssl rand -hex 32)   # required: >= 32 chars, the app refuses to start without it
 docker compose up          # http://localhost:8080
 # seeded logins:  alice / alicepw   ·   admin / admin123
 ```

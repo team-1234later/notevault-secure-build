@@ -6,7 +6,7 @@
 #        bash docs/demo-C.sh clean    (remove demo containers)
 export TEAM_ID=1234Later
 cd "$(dirname "$0")/.." || exit 1
-DIG=localhost:5000/notevault@sha256:d2e2cd7d32b8175ccc77fe4a8854cae0063149142250c2dc642274c3335b802e
+DIG=localhost:5000/notevault@sha256:11e00435ef5264c7962057e5707257c14b265d8489a961d2f4b432038c12e6be
 
 pause(){ [ -n "$DEMO_AUTO" ] || read -rp "   [Enter] " _; echo; }
 step(){ echo; echo "=== $1 ==="; }
@@ -19,7 +19,7 @@ if [ "$1" = setup ]; then
   docker build -q -t notevault:vulnerable "$tmp" && docker build -q -t notevault:fixed .
   docker rm -f nv-vuln nv-fixed >/dev/null 2>&1
   docker run -d --name nv-vuln  -e TEAM_ID=$TEAM_ID -p 8081:8080 notevault:vulnerable >/dev/null
-  docker run -d --name nv-fixed -e TEAM_ID=$TEAM_ID -p 8082:8080 notevault:fixed >/dev/null
+  docker run -d --name nv-fixed -e TEAM_ID=$TEAM_ID -e APP_SECRET="$(openssl rand -hex 32)" -p 8082:8080 notevault:fixed >/dev/null
   docker start reg >/dev/null 2>&1
   sleep 4; echo "ready: vulnerable :8081, fixed :8082"; exit
 fi

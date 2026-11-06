@@ -1,8 +1,8 @@
 WARNING: Skipping tlog verification is an insecure practice that lacks transparency and auditability verification for the signature.
 
-[{"critical":{"identity":{"docker-reference":"localhost:5000/notevault@sha256:d2e2cd7d32b8175ccc77fe4a8854cae0063149142250c2dc642274c3335b802e"},"image":{"docker-manifest-digest":"sha256:d2e2cd7d32b8175ccc77fe4a8854cae0063149142250c2dc642274c3335b802e"},"type":"https://sigstore.dev/cosign/sign/v1"},"optional":{}}]
+[{"critical":{"identity":{"docker-reference":"localhost:5000/notevault@sha256:11e00435ef5264c7962057e5707257c14b265d8489a961d2f4b432038c12e6be"},"image":{"docker-manifest-digest":"sha256:11e00435ef5264c7962057e5707257c14b265d8489a961d2f4b432038c12e6be"},"type":"https://sigstore.dev/cosign/sign/v1"},"optional":{}}]
 
-Verification for localhost:5000/notevault@sha256:d2e2cd7d32b8175ccc77fe4a8854cae0063149142250c2dc642274c3335b802e --
+Verification for localhost:5000/notevault@sha256:11e00435ef5264c7962057e5707257c14b265d8489a961d2f4b432038c12e6be --
 The following checks were performed on each of these signatures:
   - The cosign claims were validated
   - Existence of the claims in the transparency log was verified offline
