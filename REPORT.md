@@ -189,7 +189,7 @@ Per finding: the fix, **before/after** code, and the commit that implements it.
 +                      shell=False, capture_output=True, text=True)
 ```
 - **Why this fixes it:** `shell=True` was handing the whole, attacker-influenced string to `/bin/sh -c`, so shell metacharacters in `fmt` ran as separate commands. Passing an argument list with `shell=False` removes the shell entirely — there is nothing for `;`, `|`, or `` ` `` to be interpreted by. The allow-list check is defense in depth, so even a future refactor back toward a shell call can't reintroduce the bug via `fmt`.
-- **Commit:** `d6eab68`
+- **Commit:** `821730d`
 - **Proof the exploit now fails:** `GET /export?fmt=txt;id` as `alice` now returns `400 unsupported format` instead of `uid=0(root)...`; `GET /export?fmt=csv` still works normally. Before: `screenshots/findings/F-07-export-rce.png`. After: `screenshots/retest/F-07-after-export-blocked.png`.
 
 ### Fix for F-08 — `/admin` exposing password hashes
@@ -198,7 +198,7 @@ Per finding: the fix, **before/after** code, and the commit that implements it.
 + rows = con.execute("SELECT id,username,role FROM users").fetchall()
 ```
 - **Why this fixes it:** the `password` column is dropped at the SQL level, not filtered out afterward, so the hash never exists in the Python process or the JSON response at all — there is no later code path that could accidentally re-include it.
-- **Commit:** `ecf03f9`
+- **Commit:** `4d5df60`
 - **Proof the exploit now fails:** `GET /admin` as the real `admin` account now returns only `id`/`username`/`role` for every user — no `password` field. Before: `screenshots/findings/F-08-admin-password-dump.png`. After: `screenshots/retest/F-08-after-admin-no-hashes.png`.
 
 ### Fix for F-09 — Dockerfile hardening (root user, baked secret, bloated image, debug mode)
@@ -222,7 +222,7 @@ Per finding: the fix, **before/after** code, and the commit that implements it.
 + app.run(host="0.0.0.0", port=8080, debug=debug_mode)
 ```
 - **Why this fixes it:** pinning the base image by digest makes builds reproducible and stops a retagged/compromised upstream `python:3.12` from being pulled silently. Dropping `ENV APP_SECRET` means no secret ever lands in an image layer (`docker history` has nothing to show). Copying only `requirements.txt` and `app.py`, instead of `COPY . .`, keeps `.git/`, `REPORT.md`, `PLAN.md`, and `screenshots/` out of the runtime image entirely. Adding a dedicated `notevault` user and `USER notevault` means code execution (e.g. a future F-07-class bug) lands with no root privileges in the container. Making `debug` opt-in removes the Werkzeug interactive debugger/console from the default run.
-- **Commit:** `69ba34f`
+- **Commit:** `985d677`
 - **Proof the exploit now fails:** rebuilt image — `docker exec ... whoami` → `notevault` (was `root`); `docker history ... | grep -i secret` → no match (was `ENV APP_SECRET=...`); `docker exec ... ls -la /app` → only `app.py`, `requirements.txt` (was `.git/`, docs, screenshots too); `GET /console` → `404` (was the Werkzeug debugger page). Before: `screenshots/findings/F-09-dockerfile-root-secret.png`. After: `screenshots/retest/F-09-after-dockerfile-hardened.png`.
 
 ---
