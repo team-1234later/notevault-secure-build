@@ -50,7 +50,7 @@ PAGE = """
   {% if is_admin %}· <a href="/admin">admin</a>{% endif %}</p>
 <form method=post action="/notes"><input name=title placeholder=title>
   <input name=body placeholder=note><button>Add note</button></form>
-<h3>Your notes</h3>{{ notes_html|safe }}
+<h3>Your notes</h3>{% for n in notes %}<li>#{{ n.id }} <b>{{ n.title }}</b>: {{ n.body }}</li>{% endfor %}
 <form action="/search"><input name=q placeholder="search notes"><button>Search</button></form>
 {% else %}
 <form method=post action="/login">user <input name=username> pass <input name=password type=password>
@@ -59,6 +59,8 @@ PAGE = """
   <button>Register</button></form>
 {% endif %}
 """
+
+SEARCH_PAGE = """<a href=/>back</a><ul>{% for r in rows %}<li>{{ r.title }}: {{ r.body }}</li>{% endfor %}</ul>"""
 
 
 def db():
@@ -107,15 +109,16 @@ def role_of(username):
 @app.route("/")
 def home():
     user = current_user()
-    notes_html = ""
+    rows = []
     if user:
         con = db()
         rows = con.execute("SELECT id,title,body FROM notes WHERE owner = ?", (user,)).fetchall()
         con.close()
-        notes_html = "".join(
-            "<li>#%d <b>%s</b>: %s</li>" % (r["id"], r["title"], r["body"]) for r in rows)
+    # Fix for F-14 (CWE-79 stored XSS): notes are no longer pre-built into an HTML string
+    # and marked |safe. The rows are passed to the template, which auto-escapes every
+    # title/body, so "<script>" in a note is shown as text instead of running.
     return render_template_string(PAGE, user=user, is_admin=(user and role_of(user) == "admin"),
-                                  notes_html=notes_html)
+                                  notes=rows)
 
 
 @app.route("/register", methods=["POST"])
@@ -216,11 +219,10 @@ def search():
     rows = con.execute(q, (user, f"%{term}%")).fetchall()
     con.close()
 
-    return render_template_string(
-        "<a href=/>back</a><ul>" +
-        "".join("<li>%s: %s</li>" % (r["title"], r["body"]) for r in rows) +
-        "</ul>"
-    )
+    # Fix for F-13 (CWE-1336 server-side template injection): the template is now a fixed
+    # constant and the rows are passed in as data. Note text is never part of the template
+    # source, so "{{ ... }}" in a note is printed literally (and HTML-escaped), not executed.
+    return render_template_string(SEARCH_PAGE, rows=rows)
 
 @app.route("/admin")
 def admin():
