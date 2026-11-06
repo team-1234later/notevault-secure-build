@@ -1,7 +1,6 @@
 # Term Project Report — Secure Build
 
-> Fill in every section. Keep the headings. Total **100 pts** (see rubric at the end).
-> This is **team work** (2–3). Do not share your report with other teams.
+> Team 1234Later (four members) · NoteVault secure-build term project · Total **100 pts** (see rubric at the end).
 
 ## Cover
 
@@ -10,7 +9,7 @@
 | Team name | 1234Later (`TEAM_ID=1234Later`) |
 | Members (name + ID) | A: Sorrawit Thanakhwang (6531503080) · B: Neree Booncharoen (6631503018) · C: Sutapat Chucham (6531503085) · D: Nararat Kritphet (6631503110) |
 | Target application | NoteVault (course term-project starter app: Flask note-sharing web app + JSON API) |
-| Repository URL | https://github.com/team-1234later/notevault-secure-build (fixes on branch `remediation`) |
+| Repository URL | https://github.com/team-1234later/notevault-secure-build (all fixes are merged into `main`) |
 | Video | NONE |
 | Date | 6 November 2026 |
 
@@ -27,7 +26,7 @@
 ---
 
 ## 1. Executive Summary
-NoteVault is a small Flask web app where users register, log in with a cookie session, keep private notes, search them, and export them, with an admin panel that lists users. We assessed it as a four-person team: we threat-modelled it with STRIDE over a data-flow diagram (§3), attacked every endpoint and the container build, and fixed what we found on the `remediation` branch.
+NoteVault is a small Flask web app where users register, log in with a cookie session, keep private notes, search them, and export them, with an admin panel that lists users. We assessed it as a four-person team: we threat-modelled it with STRIDE over a data-flow diagram (§3), attacked every endpoint and the container build, and fixed what we found; all fixes are merged into `main`.
 
 **Before our fixes the app was effectively wide open.** We verified **14 findings: 3 Critical, 7 High, 3 Medium, 1 Low.**
 
@@ -96,7 +95,7 @@ We walked each element and flow of the §2 DFD and applied STRIDE. `✓` marks a
 |---|---|---|---|---|---|---|---|
 | **Credentials flow** — Browser → `/login`, `/register` | ✓ | ✓ | ✓ | ✓ | – | ✓ | **Authentication bypass / self-made admin.** `login()` builds SQL by string formatting (`admin'--` logs in with no password, **F-03**), and `register()` trusts a client-supplied `role` (`role=admin` → instant admin, **F-04**). *Mitigation:* parameterize the login query (use the `?` form already in `role_of()`); force new accounts to `role="user"` and ignore any client role. |
 | **Session cookie (JWT)** — issued by `/login`, read by every route via `current_user()` | ✓ | ✓ | – | ✓ | – | ✓ | **Token forgery → admin with no password.** The signing key is hard-coded (`SECRET`, **F-05**), so anyone can mint a valid `HS256` token for `sub=admin`; `current_user()` also allow-lists `alg:none` (**F-02**, latent); the cookie carries no `HttpOnly`/`Secure`/`SameSite`, so an XSS can steal it (**F-06**). *Mitigation:* load `SECRET` from the environment / a secrets manager and rotate it; `algorithms=["HS256"]` only; set `httponly=True, secure=True, samesite="Lax"`. |
-| **Auth & Session process** — `current_user()`, `role_of()` | ✓ | – | ✗ | – | – | ✓ | **Spoofing via a forged or `none` token** is accepted as a real identity. *Mitigation:* as above — verify only `HS256` against a secret the client cannot know. |
+| **Auth & Session process** — `current_user()`, `role_of()` | ✓ | – | ✓ | – | – | ✓ | **Spoofing via a forged or `none` token** is accepted as a real identity. *Mitigation:* as above — verify only `HS256` against a secret the client cannot know. |
 | **Notes & Search process** — `/`, `/notes`, `/api/notes/<id>`, `/search` | – | ✓ | – | ✓ | – | – | **Cross-user note disclosure + second SQLi.** `/api/notes/<id>` returns any note by id with no owner check — any logged-in user reads the admin's note (`prod db password is hunter2`), a BOLA (**F-10**); `/search` builds SQL with `%s` again, a second injection (**F-12**), and renders results through `render_template_string`, a template injection (**F-13**); note bodies render with `\|safe`, enabling stored XSS (**F-14**). *Mitigation:* check `owner == current_user()` on `nid`; parameterize the search; escape note output (drop `\|safe`). |
 | **Admin Panel process** — `/admin` | – | – | ✓ | ✓ | – | ✓ | **Full credential dump to anyone holding an admin session.** `/admin` returns every user's username, role, and password hash as JSON; reaching it is role-gated but the gate is defeated by F-04/F-05, and the dump is not logged (**F-08**). *Mitigation:* never return password hashes; enforce real role-based access control; write an audit log of admin access (counters the R gap). |
 | **Export process → OS shell** — `/export` | – | ✓ | – | ✓ | ✓ | ✓ | **OS command injection → remote code execution** (**F-07**). `subprocess.run("echo exporting notes as " + fmt, shell=True)` pastes the client's `fmt` into a shell string, so `fmt=txt;id` runs `id`; any registered user can reach it. *Mitigation:* remove the shell call entirely and build the export in-process; if a command is unavoidable, pass an argument list (no `shell=True`) and allow-list `fmt`. |
@@ -306,7 +305,7 @@ equirements.txt:/src/requirements.txt:ro" aquasec/trivy:0.56.2 fs --scanners vul
 
 Per finding: the fix, **before/after** code, and the commit that implements it.
 
-All fixes below were retested against a fresh build of the `remediation` branch (`docker compose up --build` with `TEAM_ID=1234Later` and a random 64-hex-character `APP_SECRET`), replaying the same requests used in §4.
+All fixes below were retested against a fresh build of the final code on `main` (`docker compose up --build` with `TEAM_ID=1234Later` and a random 64-hex-character `APP_SECRET`), replaying the same requests used in §4.
 
 ### Fix for F-01 — Unsalted MD5 password storage
 ```diff
@@ -604,7 +603,51 @@ Semgrep reports six WARNING-level findings in `app.py` that do not block the bui
 ---
 
 ## Appendix
-- Tools used, references (OWASP/CWE links), and the team's task split.
+
+### A. Tools used
+| Tool | Version | Used for |
+|---|---|---|
+| Docker / Docker Compose | Engine 29.x | Building and running the app, `docker history` / `docker exec` evidence |
+| curl | system | Reproducing and retesting every finding (§4, §5) |
+| Trivy (`aquasec/trivy`, `trivy-action`) | 0.56.2 (manual scan) · action v0.36.0 (CI) | Dependency, secret and Dockerfile misconfiguration scan (F-11, §7) |
+| Semgrep | 1.184.0 | SAST in CI (§7) |
+| Gitleaks | v8.30.1 | Secret scanning of the full git history in CI (§7) |
+| Syft | 1.57.0 | CycloneDX SBOM of the final image (§6) |
+| Cosign | v3.1.4 | Signing and verifying the image by digest (§6) |
+| GitHub Actions | n/a | Security CI pipeline `.github/workflows/security-ci.yml` (§7) |
+
+### B. References
+- OWASP Top 10: https://owasp.org/Top10/ · OWASP API Security Top 10: https://owasp.org/API-Security/
+- CWE entries cited in §4 (`https://cwe.mitre.org/data/definitions/<id>.html`):
+  [CWE-78](https://cwe.mitre.org/data/definitions/78.html) OS command injection ·
+  [CWE-79](https://cwe.mitre.org/data/definitions/79.html) cross-site scripting ·
+  [CWE-89](https://cwe.mitre.org/data/definitions/89.html) SQL injection ·
+  [CWE-94](https://cwe.mitre.org/data/definitions/94.html) code injection ·
+  [CWE-200](https://cwe.mitre.org/data/definitions/200.html) sensitive information exposure ·
+  [CWE-250](https://cwe.mitre.org/data/definitions/250.html) unnecessary privileges ·
+  [CWE-321](https://cwe.mitre.org/data/definitions/321.html) hard-coded cryptographic key ·
+  [CWE-327](https://cwe.mitre.org/data/definitions/327.html) broken cryptographic algorithm ·
+  [CWE-347](https://cwe.mitre.org/data/definitions/347.html) improper signature verification ·
+  [CWE-614](https://cwe.mitre.org/data/definitions/614.html) cookie without `Secure` ·
+  [CWE-639](https://cwe.mitre.org/data/definitions/639.html) authorization bypass via user-controlled key ·
+  [CWE-798](https://cwe.mitre.org/data/definitions/798.html) hard-coded credentials ·
+  [CWE-915](https://cwe.mitre.org/data/definitions/915.html) mass assignment ·
+  [CWE-916](https://cwe.mitre.org/data/definitions/916.html) weak password hash ·
+  [CWE-1004](https://cwe.mitre.org/data/definitions/1004.html) cookie without `HttpOnly` ·
+  [CWE-1104](https://cwe.mitre.org/data/definitions/1104.html) unmaintained third-party components ·
+  [CWE-1336](https://cwe.mitre.org/data/definitions/1336.html) template-engine injection ·
+  [CWE-1395](https://cwe.mitre.org/data/definitions/1395.html) vulnerable third-party dependency
+- CycloneDX: https://cyclonedx.org/ · SLSA: https://slsa.dev/ · Sigstore Cosign: https://docs.sigstore.dev/
+
+### C. Team task split
+| Member | Vulnerabilities found and fixed | Infrastructure work | Report sections |
+|---|---|---|---|
+| A — Sorrawit | `/register`, `/login`, `/logout`, session cookie, passwords | Threat model, report compilation | Cover, §1, §3, §8 |
+| B — Neree | `/notes`, `/api/notes/<id>`, `/search` | CI pipeline, demo video compilation | §7 |
+| C — Sutapat | `/admin`, `/export`, `Dockerfile` (F-07, F-08, F-09) | SBOM and Cosign signing | §6 |
+| D — Nararat | `requirements.txt` dependencies (F-11) | System scope, AI disclosure collection | §2, AI disclosure |
+
+F-13 and F-14 were found while compiling this report (see §8). Each member's own commits are in the git history.
 
 ---
 
