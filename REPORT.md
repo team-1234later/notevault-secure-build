@@ -228,11 +228,30 @@ Per finding: the fix, **before/after** code, and the commit that implements it.
 ---
 
 ## 6. Supply-Chain Hardening  *(15 pts)*
-- **SBOM** (CycloneDX) generated — attach `sbom.json`, note component count.
-- **Artifact signed & verified** with Cosign — paste the `cosign verify` output.
-- One-paragraph **SLSA** self-assessment (which level, why).
 
----
+### SBOM (CycloneDX)
+- **Tool:** Syft (`anchore/syft`) on the hardened image `notevault:fixed` (built with `TEAM_ID=1234Later`).
+- **Command:** `syft notevault:fixed -o cyclonedx-json > supply-chain/sbom.json`
+- **File:** `supply-chain/sbom.json` — CycloneDX 1.7, 2801 components: 100 libraries (OS packages + Python packages such as `flask@2.0.1`), 7 applications, 1 operating-system, 2693 file entries. SHA-256: `be45026336288c396d652fb815192f3610b41765cb48b7a7b698aaf6e957bdc7`.
+- **Screenshot:** `screenshots/supply-chain/F-06-sbom-cyclonedx.png` (real terminal capture; shows `TEAM_ID=1234Later`, user, Bangkok timestamp).
+
+### Signing and verification (Cosign)
+- Image pushed to a local registry, then signed **by digest** (a tag can be moved; a digest cannot):
+  `cosign sign --key supply-chain/cosign.key localhost:5000/notevault@sha256:d2e2cd7d32b8175ccc77fe4a8854cae0063149142250c2dc642274c3335b802e`
+- Verified with the public key `supply-chain/cosign.pub`:
+  `cosign verify --key supply-chain/cosign.pub <same digest>`
+- Output (full text in `supply-chain/cosign-verify.txt`):
+  ```
+  The following checks were performed on each of these signatures:
+    - The cosign claims were validated
+    - The signatures were verified against the specified public key
+  [{"critical":{"identity":{"docker-reference":"localhost:5000/notevault@sha256:d2e2cd7d..."},"image":{"docker-manifest-digest":"sha256:d2e2cd7d32b8175ccc77fe4a8854cae0063149142250c2dc642274c3335b802e"},"type":"https://sigstore.dev/cosign/sign/v1"},"optional":{}}]
+  ```
+- **Screenshot:** `screenshots/supply-chain/F-06-cosign-verify.png` (real terminal capture with `TEAM_ID=1234Later`).
+- The private key is git-ignored. Rekor transparency log was skipped (local registry, key-based signing); keyless signing would need a public registry and OIDC identity.
+
+### SLSA self-assessment
+**SLSA Build L1.** The build is scripted (`Dockerfile`, base image pinned by digest) and produces provenance-like evidence (SBOM + signature over the exact digest). It is not L2: the image was built on a team laptop, not a hosted build service, and no signed provenance attestation is generated. Next step: build in GitHub Actions and attach a provenance attestation.
 
 ## 7. Security CI Pipeline  *(10 pts)*
 - Link to the GitHub Actions workflow (SAST + SCA + secret scanning).

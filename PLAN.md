@@ -47,7 +47,7 @@
 ### อ. 3 พ.ย.
 - [ ] A / B / C / D: ทดสอบซ้ำ เก็บภาพก่อน/หลัง ลง §5
 - [ ] B: CI ผ่าน (สีเขียว) — capture ภาพ
-- [ ] C: แก้ Dockerfile, ทำ SBOM (CycloneDX), เซ็น image ที่แก้แล้วด้วย Cosign
+- [x] C: แก้ Dockerfile, ทำ SBOM (CycloneDX), เซ็น image ที่แก้แล้วด้วย Cosign
 
 ### พ. 4 พ.ย.
 - [ ] B: เขียน §7
