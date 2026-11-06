@@ -20,6 +20,9 @@
 | Member | Tool | How it was used |
 |---|---|---|
 | A — Sorrawit | Claude (Anthropic), via Claude Code | Used as a tutor and assistant throughout. It explained concepts in Thai before each fix (parameterized queries, JWT algorithms, cookie flags, argon2id, fail-closed secrets), and I answered its questions before the fix was written. It drafted the fix code for F-01–F-06 and F-11, which I reviewed and committed myself. It rebuilt the app in Docker to check that each fix stopped the attack and broke nothing, ran the Trivy scans, and noticed that `requests`/`urllib3` are unused. During that checking it also found the `/search` template injection (§8). It produced the DFD as a diagram, polished the English of the report sections I own plus §2, and drafted wording from my own notes and answers (e.g. the lessons learned in §8). I ran every attack and retest myself for the screenshots, decided which findings and fixes to keep, and can explain each one. |
+| B — Neree | ChatGPT (OpenAI) | Help with the parameterized `/search` query and the ownership check on `/api/notes/<id>` (F-10), and with adapting the Week 15 lab's `security-ci.yml` template into this repo's pipeline. |
+| C — Sutapat | Claude (Anthropic) | Help with testing and writing up F-07–F-09 (command injection in `/export`, password hashes in `/admin`, Dockerfile hardening): explaining the issues, drafting the fix code and its comments, suggesting the `docker inspect`/`docker history` checks used as evidence, and polishing the English of the §4/§5 entries. |
+| D — Nararat | — | Not reported. |
 
 ---
 
@@ -37,13 +40,51 @@ NoteVault is a small Flask web app where users register, log in with a cookie se
 
 Three independent paths gave a stranger full control with no password: register with `role=admin` (F-04), forge an admin token with the key from the source code (F-05), or inject a shell command through `/export` (F-07). Once inside, `/admin` handed out every password hash (F-08), and because they were unsalted MD5 (F-01), `admin123` and `alicepw` cracked in seconds.
 
-**After our fixes,** every one of these attacks was replayed against a fresh build and now fails (§5): queries are parameterized, roles are set by the server, the signing key comes from the environment and the app refuses to start without one, only `HS256` tokens are accepted, cookies carry all three flags, passwords are argon2id, `/export` no longer uses a shell, `/admin` no longer returns hashes, notes are checked for ownership, the container runs as a non-root user from a pinned image, and every dependency is on a current release with Trivy reporting zero High/Critical issues. The overall risk drops from **critical (anonymous admin and remote code execution)** to **moderate**. The main remaining issues are the two output-handling bugs found last, F-13 (template injection in `/search`) and F-14 (HTML injection in notes); see §5/§8 for their status.
+**After our fixes,** every one of these attacks was replayed against a fresh build and now fails (§5): queries are parameterized, roles are set by the server, the signing key comes from the environment and the app refuses to start without one, only `HS256` tokens are accepted, cookies carry all three flags, passwords are argon2id, `/export` no longer uses a shell, `/admin` no longer returns hashes, notes are checked for ownership, the container runs as a non-root user from a pinned image, and every dependency is on a current release with Trivy reporting zero High/Critical issues. The overall risk drops from **critical (anonymous admin and remote code execution)** to **low**, with the remaining hardening items listed in §8. All 14 findings are fixed and retested in §5, including the two output-handling bugs found last: F-13 (template injection in `/search`) and F-14 (HTML injection in notes).
 
 ---
 
 ## 2. System Scope & Function
-- What the application does; in-scope components and endpoints.
-- **Data-Flow Diagram (DFD):** processes, data stores, external entities, **trust boundaries** (insert image).
+### What the application does
+NoteVault is a small team note-sharing web app with a JSON API, written in Python with Flask and backed by a single SQLite file. A visitor can register and log in. Login issues a session cookie that holds a JWT signed by the server. A logged-in user can then add private notes, list and search their own notes, fetch a single note through the API, and export their notes. Users with the `admin` role also get an admin panel that lists every account. The app ships as one Docker container built from the repository's `Dockerfile` and is started with `docker compose up` on port 8080.
+
+### In-scope components
+
+| Component | What it is | In scope because |
+|---|---|---|
+| Web app (`app.py`) | Flask routes, session handling, HTML templates | All application logic and every finding in §4 lives here |
+| Session token | JWT (`HS256`) in the `session` cookie, signed with `SECRET` | It is the only thing that proves who a request comes from |
+| Database | SQLite at `/tmp/notevault.db`: `users` (username, password hash, role) and `notes` (owner, title, body) | Holds credentials and private notes |
+| OS shell | Reached by `/export` through `subprocess` | It is a second trust boundary inside the server |
+| Container build | `Dockerfile`, `docker-compose.yml` | Decides the user the app runs as and where secrets live |
+| Dependencies | `requirements.txt` (Flask, Werkzeug, Jinja2, PyJWT, requests, urllib3, argon2-cffi) | Third-party code runs with the app's privileges |
+
+Out of scope: the host machine, Docker itself, GitHub, and any network beyond `localhost`.
+
+### Endpoints
+
+| Method + path | Auth needed | Purpose | Related findings |
+|---|---|---|---|
+| `GET /` | optional | Login/register forms, or the user's notes when logged in | F-14 |
+| `POST /register` | none | Create an account | F-01, F-04 |
+| `POST /login` | none | Check credentials, set the `session` cookie | F-01, F-03, F-05, F-06 |
+| `GET /logout` | none | Delete the session cookie | session revocation (§8) |
+| `POST /notes` | user | Add a note | — |
+| `GET /api/notes/<id>` | user | Return one note as JSON | F-10 |
+| `GET /search?q=` | user | Search the user's own notes | F-12, F-13 |
+| `GET /admin` | admin | List all users | F-08 |
+| `GET /export?fmt=` | user | Export notes in a chosen format | F-07 |
+| every request | — | `current_user()` reads and verifies the JWT | F-02, F-05 |
+
+### Data-Flow Diagram (DFD)
+
+![NoteVault DFD](screenshots/dfd-notevault.png)
+
+The diagram shows one external entity (the user's browser), four processes (Auth & Session, Notes & Search, Admin Panel, Export), two data stores (the SQLite database and the signing secret) and the OS shell. It has **two trust boundaries**:
+1. **Browser → Server.** Everything the client sends (form fields, query strings, the cookie) is untrusted until the server checks it. Most of our findings sit on this line: F-03 and F-04 trust form input, and F-02 and F-05 trust the token.
+2. **App → OS shell.** `/export` passes data from the app into a shell command. Crossing this line without validation turns an input bug into remote code execution (F-07).
+
+The full STRIDE walk over each element of this diagram is in §3.
 
 ---
 
@@ -206,6 +247,20 @@ One block per finding (copy as needed):
 
 *Root cause in plain terms: authentication ("who are you?") was checked, authorization ("is this yours?") was not. The id in the URL is chosen by the client, so the server must tie every lookup to the logged-in user. Fix: add `AND owner = ?` with the current user to the query.*
 
+### Finding F-11 — Vulnerable and unused third-party dependencies
+| Field | Value |
+|---|---|
+| CWE | CWE-1395 (Dependency on Vulnerable Third-Party Component) / CWE-1104 (Use of Unmaintained Third-Party Components) |
+| OWASP 2025 | A03 Software Supply Chain Failures |
+| Severity | High (scanner rates one CVE Critical; see the reachability note below) |
+| Location | `requirements.txt`: `Flask==2.0.1`, `Werkzeug==2.0.1`, `Jinja2==3.0.1`, `PyJWT==1.7.1`, `requests==2.25.1`, `urllib3==1.26.4` |
+| Reproduction | Software-composition scan of the dependency file: `docker run --rm -v "%cd%
+equirements.txt:/src/requirements.txt:ro" aquasec/trivy:0.56.2 fs --scanners vuln --severity HIGH,CRITICAL /src` reports **17 known vulnerabilities (1 Critical, 16 High) in 4 of the 6 pinned libraries**. PyJWT 1.7.1 has 6 (including Critical CVE-2026-102268, authentication bypass via improper public-key validation, and CVE-2026-48526, forged-JWT authentication bypass), urllib3 1.26.4 has 8, Werkzeug 2.0.1 has 2 (including CVE-2024-34069, code execution through the debugger) and Flask 2.0.1 has 1 (CVE-2023-30861, session cookie exposure behind a cache). Every pin dates from 2021. |
+| Impact | The app inherits every bug in the code it imports, and these libraries handle exactly the security-critical parts of NoteVault: PyJWT verifies every session, and Werkzeug parses every request. **Reachability (checked by reading `app.py`):** not all 17 are exploitable as the app is written today. The app signs tokens with `HS256` only, so the PyJWT public-key/JWK CVEs do not apply yet. They would become live the moment someone switches to RS256 or JWKs, so they are a latent risk. `requests` and `urllib3` are **never imported anywhere in the code**, so their 8 CVEs add risk and scanner noise with no benefit. The Werkzeug multipart-parsing DoS (CVE-2023-25577) *is* reachable through every form POST, and CVE-2024-34069 was reachable while `debug=True` was on (fixed in F-09). |
+| Evidence | Trivy output above. Screenshot: `screenshots/findings/F-11-trivy-vulnerable-deps.png`. |
+
+*Root cause in plain terms: the dependencies were pinned once and never revisited, and nothing in the build checked them. Pinning is good, because it makes builds reproducible, but a pin is a promise to keep updating it. Fix: upgrade the libraries the app uses to current releases, remove the ones it doesn't use, and gate the CI on a Trivy scan so this can't quietly drift back (§7).*
+
 ### Finding F-12 — SQL injection in `/search`
 | Field | Value |
 |---|---|
@@ -215,7 +270,7 @@ One block per finding (copy as needed):
 | Location | `app.py` `search()`, `q = "SELECT id,title,body FROM notes WHERE owner='%s' AND body LIKE '%%%s%%'" % (user, term)` |
 | Reproduction | The same `%s` string-building flaw as F-03, in a second place: the search term is pasted into the SQL text. **Verified:** as `alice`, searching for `' OR 1=1 -- ` (`/search?q=%27%20OR%201%3D1%20--%20`) turns the condition into `... body LIKE '%' OR 1=1 -- %'`, which bypasses the `owner=` filter. The page lists **every user's notes**, including the admin's `infra: prod db password is hunter2` and `build-tag: team=1234Later marker=903fd6ff6fce`. |
 | Impact | Cross-user disclosure of all notes. A `UNION SELECT` on the same parameter could also read other tables, such as `users` with its password hashes. A second, independent path to the data F-10 exposes. |
-| Evidence | Screenshot: `screenshots/findings/NV-search-before.png`. |
+| Evidence | Screenshot: `screenshots/findings/F-12-sqli-search-before.png`. |
 
 *Root cause in plain terms: fixing SQL injection in one function (F-03, `login()`) does not fix it in the others. Every query that touches user input needs the `?` form, and here the `%` wildcards belong in the bound value, not the SQL text.*
 
@@ -228,7 +283,7 @@ One block per finding (copy as needed):
 | Location | `app.py` `search()`, `render_template_string("<a href=/>back</a><ul>" + "".join("<li>%s: %s</li>" % (r["title"], r["body"]) ...) + "</ul>")` |
 | Reproduction | The search page is built by pasting note titles and bodies into a string, and that string is then handed to `render_template_string`, which **executes it as a Jinja2 template**. A note's text therefore runs as template code when it appears in search results. **Verified on the `remediation` build (after F-12's SQLi fix):** as `alice`, add a note with body `zz{{7*7}}` and search `zz`, and the result shows `zz49`. Add `yy{{ cycler.__init__.__globals__.os.popen('id').read() }}` and search `yy`, and it returns `uid=10001(notevault) gid=10001(notevault)`: shell commands run on the server. Semgrep flags this line (`render-template-string`, WARNING). |
 | Impact | Any registered user can run arbitrary commands on the server: read the database file, environment variables (including `APP_SECRET`), and anything else the app account can reach. F-09's non-root user limits it to the `notevault` account instead of root, but it is still full code execution in the app. |
-| Evidence | Reproduced with the requests above against the running container (`{{7*7}}` gave `49`; `os.popen('id')` gave `uid=10001(notevault)`). |
+| Evidence | Reproduced with the requests above against the running container (`{{7*7}}` gave `49`; `os.popen('id')` gave `uid=10001(notevault)`). Screenshot: `screenshots/findings/F-13-ssti-before.png`. |
 
 *Root cause in plain terms: the template engine was given user data as if it were template code. Templates are code, so data must be passed in as variables, never concatenated into the template string. This is the template-engine twin of SQL injection (F-03/F-12) and command injection (F-07).*
 
@@ -403,6 +458,25 @@ Plus `argon2-cffi==23.1.0` added to `requirements.txt`.
 - **Commit:** `2b85028`
 - **Proof the exploit now fails:** as `alice`, `/api/notes/3` (the admin's note) now returns `{"error":"not found"}`, while her own `/api/notes/1` still returns `200`. Before: `screenshots/findings/F-10-idor-before.png`. After: `screenshots/retest/F-10-idor-after.png`.
 
+### Fix for F-11 — Vulnerable and unused dependencies
+```diff
+- Flask==2.0.1
+- Werkzeug==2.0.1
+- Jinja2==3.0.1
+- PyJWT==1.7.1
+- requests==2.25.1
+- urllib3==1.26.4
+- argon2-cffi==23.1.0
++ Flask==3.1.3
++ Werkzeug==3.1.9
++ Jinja2==3.1.6
++ PyJWT==2.15.1
++ argon2-cffi==25.1.0
+```
+- **Why this fixes it:** the four libraries the app actually imports (Flask, Werkzeug, Jinja2, PyJWT) plus argon2-cffi from F-01 are moved to their current releases, which contain the fixes for all 17 CVEs. `requests` and `urllib3` are removed outright: nothing in `app.py` imports them, so deleting them removes 8 CVEs and their whole attack surface without changing any behavior. The versions stay pinned exactly (`==`), so builds remain reproducible and the SBOM in §6 lists precisely what ships. No code changes were needed. PyJWT 2.x returns `str` from `jwt.encode()` and requires `algorithms=` on `decode()`, which F-02's fix already passes.
+- **Commit:** `e58e342`
+- **Proof the exploit now fails:** the same Trivy scan now reports **0 High/Critical** (exit code 0 with `--exit-code 1`), down from 17. Regression check on the rebuilt image: alice logs in, adds and searches notes, exports, reads her own note via the API (`200`) and not someone else's (`404`). The F-02/F-03/F-05 attacks still fail (`403`/`401`/`403`), so the upgrade did not undo any earlier fix. Before: `screenshots/findings/F-11-trivy-vulnerable-deps.png`. After: `screenshots/remediation/F-11-after-trivy-clean.png`.
+
 ### Fix for F-12 — Parameterized `/search` query
 ```diff
 - q = "SELECT id,title,body FROM notes WHERE owner='%s' AND body LIKE '%%%s%%'" % (user, term)
@@ -417,7 +491,36 @@ Plus `argon2-cffi==23.1.0` added to `requirements.txt`.
 ```
 - **Why this fixes it:** both the owner and the search term are bound as `?` values. The `%` wildcards are added to the *value*, so a `'` in the term is just a character to search for. It can't close the string or add `OR 1=1`.
 - **Commit:** `2b85028` (same commit as F-10)
-- **Proof the exploit now fails:** the same `' OR 1=1 -- ` search now returns an empty list instead of every user's notes. Before: `screenshots/findings/NV-search-before.png`. After: `screenshots/retest/NV-search-after.png`.
+- **Proof the exploit now fails:** the same `' OR 1=1 -- ` search now returns an empty list instead of every user's notes. Before: `screenshots/findings/F-12-sqli-search-before.png`. After: `screenshots/retest/F-12-sqli-search-after.png`.
+
+### Fix for F-13 — Search results rendered from a fixed template
+```diff
++ SEARCH_PAGE = """<a href=/>back</a><ul>{% for r in rows %}<li>{{ r.title }}: {{ r.body }}</li>{% endfor %}</ul>"""
+  ...
+- return render_template_string(
+-     "<a href=/>back</a><ul>" +
+-     "".join("<li>%s: %s</li>" % (r["title"], r["body"]) for r in rows) +
+-     "</ul>"
+- )
++ return render_template_string(SEARCH_PAGE, rows=rows)
+```
+- **Why this fixes it:** the template is now a constant written by us, and the search results are passed in as the `rows` variable. Note text is never part of the template source, so Jinja only ever *prints* it. A `{{ ... }}` inside a note is shown literally instead of being evaluated, and auto-escaping turns any `<`/`>` into `&lt;`/`&gt;`. Templates are code and notes are data, and the fix keeps those two channels apart, which is the same idea as `?` parameters for SQL (F-03/F-12) and an argument list for the shell (F-07).
+- **Commit:** `1644400`
+- **Proof the exploit now fails:** the same `zz{{7*7}}` note now comes back from `/search?q=zz` as the literal text `zz{{7*7}}` (before: `zz49`). The `os.popen('id')` payload is printed as text, and no command runs. Normal searches (`milk`) still work, and the F-12 `' OR 1=1 -- ` search still returns nothing. Before: `screenshots/findings/F-13-ssti-before.png`. After: `screenshots/remediation/F-13-after-ssti-blocked.png`.
+
+### Fix for F-14 — Notes escaped on the home page
+```diff
+- <h3>Your notes</h3>{{ notes_html|safe }}
++ <h3>Your notes</h3>{% for n in notes %}<li>#{{ n.id }} <b>{{ n.title }}</b>: {{ n.body }}</li>{% endfor %}
+  ...
+- notes_html = "".join(
+-     "<li>#%d <b>%s</b>: %s</li>" % (r["id"], r["title"], r["body"]) for r in rows)
+- return render_template_string(PAGE, ..., notes_html=notes_html)
++ return render_template_string(PAGE, ..., notes=rows)
+```
+- **Why this fixes it:** the notes are no longer pre-built into an HTML string and marked `|safe`. The rows go to the template, which auto-escapes every title and body. Only the `<li>`/`<b>` tags written in our template are real HTML. Anything a user types is text.
+- **Commit:** `1644400` (same commit as F-13)
+- **Proof the exploit now fails:** a note with body `<script>alert(1)</script>` is shown on the home page as the literal text `<script>alert(1)</script>`, and no script runs (no alert). Before: `screenshots/findings/F-14-notes-html-injection.png` (HTML tags rendered as bold). After: `screenshots/remediation/F-14-after-html-escaped.png`.
 
 ---
 
@@ -456,15 +559,15 @@ The pipeline is hardened like any other piece of the supply chain. The token is 
 2. **Green.** We then pushed the F-11 commit to the same pull request. The re-run passed all three jobs, and the PR could merge. Screenshot: `screenshots/CI/ci-pass.png`.
 
 ### What the gate does not catch (and why we chose this threshold)
-Semgrep reports six WARNING-level findings in `app.py` that do not block the build. Two of them point at real bugs: `render-template-string` at the `/search` handler, which is the template injection described in §8, and `raw-html-format` in `/export`. We set the Semgrep gate at ERROR so the build lines up with the HIGH/CRITICAL policy used for the other scanners and doesn't block every push on style-level warnings. The cost is that our most serious open bug passes the gate. That is a real limitation: a severity threshold is only as good as the rule's own severity label, so the WARNING report still needs a human reading it. A next step would be a small custom Semgrep rule at ERROR severity for `render_template_string` called on anything but a constant, which would have blocked it.
+Semgrep reports six WARNING-level findings in `app.py` that do not block the build. Two of them point at real bugs: `render-template-string` at the `/search` handler, which is the template injection described in §8, and `raw-html-format` in `/export`. We set the Semgrep gate at ERROR so the build lines up with the HIGH/CRITICAL policy used for the other scanners and doesn't block every push on style-level warnings. The cost is that F-13, the template injection that gave remote code execution, passed the gate until we fixed it by hand. That is a real limitation: a severity threshold is only as good as the rule's own severity label, so the WARNING report still needs a human reading it. A next step would be a small custom Semgrep rule at ERROR severity for `render_template_string` called on anything but a constant, which would have blocked it.
 
 ---
 
 ## 8. Conclusion & Reflection  *(5 pts — clarity)*
 ### Residual risks and what we would harden next
 
-1. **F-13: server-side template injection in `/search` (open, Critical).** Found while compiling this report, after the other fixes were in. `/search` builds its HTML by string concatenation and passes the result to `render_template_string`, so a note body is executed as a Jinja template. Verified on the `remediation` build: a note `zz{{7*7}}` comes back from `/search?q=zz` as `zz49`, and `{{ cycler.__init__.__globals__.os.popen('id').read() }}` returns `uid=10001(notevault)`. That is remote code execution for any logged-in user. F-09's non-root user limits the damage, but it is still RCE. *Fix:* pass rows to a fixed template as variables (`render_template_string(TEMPLATE, rows=rows)`) so user data is never parsed as template code, and let Jinja auto-escape it.
-2. **F-14: stored XSS on the home page (open, Low).** Note titles and bodies are built into HTML with `%s` and printed with `|safe`, so a note containing `<script>` runs in the owner's browser. F-06's `HttpOnly` stops the script from stealing the session cookie, but it can still act as the user inside the page. *Fix:* drop `|safe` and render notes through the template so they are escaped.
+1. **Template and HTML injection (F-13, F-14), fixed late.** Both were found while compiling this report, after the other fixes were in, and both are now fixed (§5). They are a reminder that a fix in one place (`?` parameters in SQL) doesn't protect the same mistake elsewhere: anywhere user data meets an interpreter (SQL, shell, template engine, browser) needs the same separation of code and data. A code review checklist entry for `render_template_string`, `|safe` and `shell=True` would have caught all three.
+2. **Semgrep gate threshold.** Our CI gate blocks only ERROR-severity Semgrep findings (§7), and F-13 was rated WARNING. *Next:* add a custom ERROR rule for `render_template_string` with non-constant input.
 3. **Sessions never expire and logout does not revoke them.** The JWT has no `exp` claim and `/logout` only deletes the browser's copy, so a stolen token works forever. *Fix:* add a short `exp`, and keep a server-side deny-list or session id that logout invalidates.
 4. **No brute-force protection on `/login`.** argon2id makes offline cracking slow, but online guessing is unlimited. *Fix:* rate-limit by account and IP, and lock out after repeated failures.
 5. **Usernames are not unique.** `register()` accepted `pwned` three times during our retest (three rows in the `users` table). *Fix:* add a `UNIQUE` constraint on `username` and handle the error.
