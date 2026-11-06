@@ -1,52 +1,53 @@
-# บทพูดวิดีโอ — C (Sutapat) · ความยาวเป้าหมาย ~3 นาที
+# Video Script — C (Sutapat) · target length ~3 minutes
 
-ส่วนของ C: `/export` (F-07), `/admin` (F-08), `Dockerfile` (F-09), SBOM + Cosign (§6)
-ก่อนอัด: `export TEAM_ID=1234Later` ใน terminal และให้เห็น TEAM_ID ทุกฉาก
-
----
-
-## 0. แนะนำตัว (~10 วิ)
-**[จอ: terminal มี TEAM_ID]**
-> "สวัสดีครับ/ค่ะ ชื่อ สุธาภัทร (C) ทีม 1234Later ส่วนของผมรับผิดชอบ 3 จุดคือ endpoint `/export`, `/admin`, และ `Dockerfile` กับงาน SBOM และการเซ็น image ด้วย Cosign ครับ/ค่ะ"
-
-## 1. F-07 — Command Injection ที่ `/export` (~50 วิ)
-**[จอ: `screenshots/findings/F-07-export-rce.png` หรือรัน curl สด]**
-- **เจาะ:** "ล็อกอินเป็น alice ซึ่งเป็นผู้ใช้ธรรมดา แล้วเรียก `/export?fmt=txt;id` ผลลัพธ์ได้ `uid=0(root)` แปลว่าสั่งคำสั่งอะไรก็ได้ในฐานะ root"
-- **สาเหตุ:** "โค้ดเอา `fmt` จาก query string ไปต่อสตริงแล้วรันด้วย `subprocess.run(..., shell=True)` shell แยกไม่ออกว่าอะไรคือคำสั่งของแอป อะไรคือของผู้โจมตี เครื่องหมาย `;` จึงรันเป็นอีกคำสั่ง ความเสี่ยงคือ CWE-78, ระดับ Critical"
-- **แก้:** "เลิกใช้ `shell=True` ส่งเป็น list แทน และเพิ่ม allow-list ให้รับแค่ txt, csv, json"
-- **ทดสอบซ้ำ:** **[จอ: retest]** "เจาะซ้ำด้วย `fmt=txt;id` ได้ `400 unsupported format` ส่วน `fmt=csv` ยังใช้งานได้ปกติ"
-
-## 2. F-08 — `/admin` เปิดเผย password hash (~35 วิ)
-**[จอ: `F-08-admin-password-dump.png`]**
-- **เจาะ:** "ล็อกอินเป็น admin จริง เรียก `/admin` แล้วได้ MD5 hash ของทุกคนใน response"
-- **สาเหตุ:** "query ดึงคอลัมน์ `password` มาด้วย แล้ว serialize ทั้งแถวเป็น JSON ทั้งที่ endpoint นี้แค่ไว้ดูรายชื่อ ถ้า session admin รั่ว ผู้โจมตีเอา hash ไปแคร็กต่อได้ทั้งระบบ CWE-200"
-- **แก้:** "เปลี่ยนเป็น `SELECT id, username, role` ตัดคอลัมน์ password ออกที่ระดับ SQL เลย"
-- **ทดสอบซ้ำ:** **[จอ: retest]** "ตอนนี้ได้แค่ id, username, role"
-
-## 3. F-09 — Dockerfile (~45 วิ)
-**[จอ: `F-09-dockerfile-root-secret.png` แล้วตัดไป Dockerfile ใหม่]**
-- **เจาะ:** "`docker exec ... whoami` ได้ root และ `docker history | grep -i secret` เจอ `APP_SECRET` ฝังอยู่ใน image"
-- **สาเหตุ:** "Dockerfile ไม่มี `USER`, ใช้ `ENV` ฝัง secret, `COPY . .` เอาทั้ง repo ไปใน image และใช้ base image แบบ tag ที่เปลี่ยนได้ ทำให้ช่องโหว่ F-07 กลายเป็น root เต็มตัว CWE-250 และ CWE-798"
-- **แก้:** "สร้าง user `notevault` ไม่ใช่ root, เอา secret ออกจาก image, copy เฉพาะ `app.py` กับ requirements, pin base image ด้วย digest และปิด debug mode"
-- **ทดสอบซ้ำ:** **[จอ: retest]** "`whoami` ได้ `notevault`, `docker history` ไม่เจอ secret, `/console` ได้ 404"
-
-## 4. SBOM + Cosign (~45 วิ)
-**[จอ: `screenshots/supply-chain/F-06-sbom-cyclonedx.png`]**
-> "หลังแก้ ผม build image ใหม่แล้วใช้ Syft สร้าง SBOM รูปแบบ CycloneDX ได้ 2,801 components เป็น library 100 ตัว รวม Flask 2.0.1 ที่ pin ไว้ จุดประสงค์คือถ้ามีช่องโหว่ใหม่ในอนาคต เรารู้ทันทีว่า image ของเราใช้ package ไหนอยู่"
-
-**[จอ: `F-06-cosign-verify.png`]**
-> "จากนั้นเซ็น image ด้วย Cosign ที่ digest ไม่ใช่ tag เพราะ tag ย้ายได้แต่ digest ย้ายไม่ได้ แล้ว verify ด้วย public key ผลคือ claims ผ่านและ signature ตรงกับ key ครับ/ค่ะ"
-
-> "ระดับ SLSA ที่ประเมินคือ Build L1 เพราะ build ด้วยสคริปต์และมีหลักฐาน SBOM กับลายเซ็น แต่ยังไม่ถึง L2 เพราะ build บนเครื่องของเรา ไม่ใช่ build service และยังไม่มี provenance"
-
-## 5. ปิด (~10 วิ)
-> "สรุป: ปิด 3 ช่องโหว่ พิสูจน์ด้วยการเจาะซ้ำ และมี SBOM กับลายเซ็นรองรับ image ที่แก้แล้ว ขอบคุณครับ/ค่ะ"
+Part C: `/export` (F-07), `/admin` (F-08), `Dockerfile` (F-09), SBOM + Cosign (§6)
+Before recording: `export TEAM_ID=1234Later` in the terminal and keep `TEAM_ID` visible in every scene.
+Live demo: `bash docs/demo-C.sh` (see the header of that file for setup).
 
 ---
 
-## เตรียมตอบถ้าอาจารย์ถามสด
-- **ทำไม allow-list ทั้งที่ `shell=False` แล้ว?** กันไว้สองชั้น ถ้าอนาคตมีคนกลับไปใช้ shell อีก `fmt` ก็ยังถูกจำกัด
-- **ทำไมตัด password ที่ SQL ไม่ใช่ตอน output?** ข้อมูลจะไม่เคยเข้ามาในโปรเซส ไม่มีทางหลุดจากโค้ดอื่น
-- **ทำไมเซ็นที่ digest?** tag ชี้ไป image อื่นได้ digest ผูกกับเนื้อหาจริง
-- **ทำไมไม่ใช้ keyless?** ใช้ local registry ไม่มี public identity จึงใช้ key pair และข้าม Rekor
-- **SBOM มี file 2,693 รายการคืออะไร?** Syft นับไฟล์ใน image ด้วย ตัว package จริงคือ 100 library
+## 0. Introduction (~10 s)
+**[Screen: terminal showing TEAM_ID]**
+> "Hello, I'm Sutapat (C) from team 1234Later. I'm responsible for three areas: the `/export` endpoint, the `/admin` endpoint and the `Dockerfile`, plus the SBOM and signing the image with Cosign."
+
+## 1. F-07 — Command injection in `/export` (~50 s)
+**[Screen: `screenshots/findings/F-07-export-rce.png` or run curl live]**
+- **Attack:** "I log in as alice, an ordinary user, and call `/export?fmt=txt;id`. The response shows `uid=0(root)`, so I can run any command as root."
+- **Root cause:** "The code pastes `fmt` from the query string into a string and runs it with `subprocess.run(..., shell=True)`. The shell cannot tell the app's command from the attacker's input, so `;` starts a second command. This is CWE-78, severity Critical."
+- **Fix:** "I removed `shell=True` and pass the arguments as a list, and added an allow-list so only txt, csv and json are accepted."
+- **Retest:** **[Screen: retest]** "The same attack with `fmt=txt;id` now returns `400 unsupported format`, while `fmt=csv` still works normally."
+
+## 2. F-08 — `/admin` exposes password hashes (~35 s)
+**[Screen: `F-08-admin-password-dump.png`]**
+- **Attack:** "I log in as the real admin and call `/admin`. The response contains every user's MD5 password hash."
+- **Root cause:** "The query selects the `password` column and the handler serializes the whole row to JSON, even though this endpoint only needs to list users. If an admin session ever leaks, the attacker can crack every password offline. This is CWE-200."
+- **Fix:** "I changed the query to `SELECT id, username, role`, so the password column is dropped at the SQL level."
+- **Retest:** **[Screen: retest]** "The response now contains only id, username and role."
+
+## 3. F-09 — Dockerfile (~45 s)
+**[Screen: `F-09-dockerfile-root-secret.png`, then cut to the new Dockerfile]**
+- **Attack:** "`docker exec ... whoami` returns root, and `docker history | grep -i secret` finds `APP_SECRET` baked into the image."
+- **Root cause:** "The Dockerfile has no `USER`, bakes a secret in with `ENV`, copies the whole repo with `COPY . .`, and uses a base image tag that can change. That turns the F-07 bug into full root access. CWE-250 and CWE-798."
+- **Fix:** "I create a non-root user `notevault`, remove the secret from the image, copy only `app.py` and the requirements, pin the base image by digest and turn debug mode off."
+- **Retest:** **[Screen: retest]** "`whoami` now returns `notevault`, `docker history` shows no secret, and `/console` returns 404."
+
+## 4. SBOM + Cosign (~45 s)
+**[Screen: `screenshots/supply-chain/F-06-sbom-cyclonedx.png`]**
+> "After the fixes I rebuilt the image and generated a CycloneDX SBOM with Syft. It lists 2,801 components, 100 of them libraries, including the pinned Flask 2.0.1. If a new vulnerability is published, we immediately know which packages our image contains."
+
+**[Screen: `F-06-cosign-verify.png`]**
+> "Then I signed the image with Cosign by digest, not by tag, because a tag can be moved but a digest cannot. Verifying with the public key succeeds: the claims are validated and the signature matches the key."
+
+> "My SLSA self-assessment is Build L1. The build is scripted and we have SBOM and signature evidence, but it is not L2 because the image was built on our own machine rather than a hosted build service, and there is no signed provenance yet."
+
+## 5. Closing (~10 s)
+> "To summarize: three vulnerabilities fixed and proven by retesting, and the fixed image is backed by an SBOM and a signature. Thank you."
+
+---
+
+## Prepare for live questions
+- **Why an allow-list when `shell=False` already fixes it?** Defense in depth. If someone later goes back to a shell call, `fmt` is still restricted.
+- **Why drop the password column in SQL instead of at output?** The data never enters the Python process, so no other code path can leak it.
+- **Why sign by digest?** A tag can point to a different image later; a digest is bound to the exact content.
+- **Why not keyless signing?** We use a local registry with no public identity, so we used a key pair and skipped the Rekor transparency log.
+- **What are the 2,693 file entries in the SBOM?** Syft also lists files in the image. The real packages are the 100 libraries.
