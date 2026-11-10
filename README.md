@@ -9,6 +9,7 @@ without a security review. Our job is to find, document, and fix its weaknesses.
 - **Team:** 1234Later · **`TEAM_ID`:** `1234Later`
 - **Deadline:** Fri 6 Nov 2026, 16:59 (team target: submit by noon)
 - **Submit:** report PDF + video link → `learn.zcr.ai/submit`
+- **Presentation Video** https://www.youtube.com/watch?v=3L-d7xhz6Ec
 - **In this repo:** code, fixes (branch `remediation`), SBOM, signatures, and CI
 - **Plan & daily checklist:** [PLAN.md](PLAN.md) · **Report:** [REPORT.md](REPORT.md)
 
