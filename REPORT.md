@@ -11,7 +11,7 @@
 | Members (name + ID) | A: Sorrawit Thanakhwang (6531503080) · B: Neree Booncharoen (6631503018) · C: Sutapat Chucham (6531503085) · D: Nararat Kritphet (6631503110) |
 | Target application | NoteVault (course term-project starter app: Flask note-sharing web app + JSON API) |
 | Repository URL | https://github.com/team-1234later/notevault-secure-build (fixes on branch `remediation`) |
-| Video | NONE |
+| Video | https://www.youtube.com/watch?v=3L-d7xhz6Ec |
 | Date | 6 November 2026 |
 
 ## AI-tool usage disclosure
